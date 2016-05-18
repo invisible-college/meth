@@ -1,0 +1,21 @@
+<script type="statebus"># -*- mode: coffee -*-
+
+window.codebus = statebus()
+codebus.sockjs_client('/*','https://stateb.us:3003')
+
+include '/code/meth/dash.coffee', null, codebus
+
+dom.BODY = -> 
+  fetch 'include'
+  DASH?() or SPAN null
+
+#</script>
+
+<script>
+  
+  var statebus_client = # PATH TO MODIFIED STATEBUS CLIENT WITH INCLUDE DEFINITION
+  var statebus_server = # URL OF YOUR LAB STATEBUS SERVER (local or remote)
+
+  document.write("<script id=js"+ statebus_client +  " src='" + statebus_client + "' charset='utf-8'></script\>" )
+
+</script>
