@@ -5,11 +5,9 @@ strategizer = require '../strategizer'
 module.exports =
 
   plateau: 
-
-    defaults:  
-      max_open_positions: 1
-      frames: frames(.8)
-      max_t2: 60
+      
+    frames: required_frames(.8)
+    max_t2: 60
 
     evaluate_new_position: (f) ->
 
@@ -33,9 +31,8 @@ module.exports =
 
         pos
 
-
     evaluate_open_position: (pos, f) -> 
-      v = get_settings pos.strategy
+      v = get_settings pos.dealer
 
       cancel_unfilled = -> 
         abort_if_neither_trade_successful_within = 5 * 60

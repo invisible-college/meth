@@ -41,22 +41,27 @@ module.exports = history =
 
     is_done()
 
-
-  longest_requested_history: ->
+  set_longest_requested_history: (dealers) -> 
     hist_lengths = []
-    for strat in get_strategies()
-      settings = get_settings(strat)
-      continue if settings.retired 
-      hist_lengths.push (settings.frames + settings.max_t2) * settings.frame_width
+    for dealer in dealers
+      dealer_data = from_cache(dealer.key)
+      has_open_positions = open_positions[dealer.key]?.length > 0
+      
+      continue if !dealer_data.active && !has_open_positions
+
+      hist_lengths.push (dealer.frames + dealer.max_t2) * dealer_data.settings.frame_width
 
     hist_lengths.push 60 * 10 # at least 25 minute frames, otherwise 
                               # problems caused by not having enough trades
-    longest = Math.max.apply null, hist_lengths
-    longest 
+
+    @longest_requested_history = Math.max.apply null, hist_lengths
+
 
   # remove trades from history that will never be used by any strategy
   prune: ->
-    history_width = history.longest_requested_history()
+    throw 'requested history not set' if !@longest_requested_history?
+
+    history_width = @longest_requested_history
 
     for trade,idx in history.trades
       if tick.time - trade.date > history_width

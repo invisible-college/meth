@@ -2,16 +2,13 @@ require './shared'
 history = require './trade_history'
 poloniex = require './poloniex'
 
+global.pusher = require('./pusher')
 
 global.config = {}
 
-fetch('/all_data')
-
-module.exports = (conf, pusher) ->
-  global.pusher = pusher
-
+module.exports = (conf) ->
+  
   extend config,
-    free_funds_if_needed: false
     tick_interval: 60
     market: 'BTC_ETH'
     take_position: take_position
@@ -25,13 +22,14 @@ module.exports = (conf, pusher) ->
 
     console.log 'STARTING METH'
 
+
+    pusher.init(history)
+
     console.log "...updating deposit history"
 
     update_deposit_history ->
-
       update_fee_schedule -> 
-
-        history_width = history.longest_requested_history()
+        history_width = history.longest_requested_history
 
         console.log "...loading past #{(history_width / 60 / 60 / 24).toFixed(2)} days of trade history"
         ts = now()
@@ -43,19 +41,19 @@ module.exports = (conf, pusher) ->
           console.log "...updating account balances"
 
           update_account_balances ->
-            console.log "...hustling!"
+  
+            update_position_status ->
 
-            one_tick()
-            setInterval one_tick, config.tick_interval * 1000
+              console.log "...hustling!"
+
+              one_tick()
+              setInterval one_tick, config.tick_interval * 1000
 
 
 
 
 ##################
 # Globals
-
-all_positions = {}
-
 
 laggy = false 
 all_lag = []
@@ -89,27 +87,12 @@ one_tick = ->
 
     balance = fetch('/balances')
 
-    open_positions = {}
-    earliest = Infinity
-    for name in get_strategies()
-      all_positions[name] = fetch("/positions/#{name}")
-      all_positions[name].positions ||= []
-      open_positions[name] = (p for p in (all_positions[name].positions or []) when !p.closed)
+    pusher.reset_open_and_all_positions()
 
-      earliest = Math.min earliest, (Math.min.apply null, (p.created for p in all_positions[name].positions))
+    pusher.hustle balance, history.trades
 
-    pusher.hustle open_positions, all_positions, balance, history.trades
-
-
-    for k,v of all_positions
-      save v 
-
-    time = fetch('/time')
-    extend time, 
-      earliest: earliest
-      latest: tick.time
-    save time
-
+    for name in get_dealers()
+      save from_cache(name)
 
   # wait for the trades or cancelations to complete, then do accounting work
   i = setInterval ->
@@ -123,8 +106,16 @@ one_tick = ->
         update_account_balances ->
           tick.lock = false  #...and now we're done with this tick
           all_lag = []
-          if config.exposure && history.trades.length > 0
-            pusher.set_exposure(config.exposure, history.trades[0].rate)
+
+          earliest = Infinity
+          for name, data of all_positions
+            earliest = Math.min earliest, (Math.min.apply null, (p.created for p in data))
+
+          time = fetch('/time')
+          extend time, 
+            earliest: earliest
+            latest: tick.time
+          save time          
 
   , 10
  
@@ -168,7 +159,7 @@ update_position_status = (callback) ->
       for name, positions of all_positions 
         missing_id = []
 
-        for pos in positions.positions
+        for pos in positions
           found = true
 
           before = JSON.stringify(pos)
@@ -197,7 +188,6 @@ update_position_status = (callback) ->
               t.total = Math.round( 100000 * total) / 100000
               t.fee = fees
               t.closed = last / 1000
-              save t 
 
           if found && pos.entry?.closed && pos.exit?.closed
 
@@ -221,9 +211,9 @@ update_position_status = (callback) ->
             # for some reason, statebus isn't sending updates to individual positions
             # through to the dash. But new positions go through. So I'll update something
             # on the key that seems to work.
-            positions.updated ||= 0
-            positions.updated += 1
-            save positions
+            # positions.updated ||= 0
+            # positions.updated += 1
+            # save positions
 
 
           missing_id.push pos if (pos.exit && !pos.exit.order_id) || (pos.entry && !pos.entry.order_id)
@@ -246,8 +236,8 @@ update_position_status = (callback) ->
             save pos
 
           else if !pos.entry && !pos.exit 
-            pusher.destroy_position(pos, positions, open_positions[pos.strategy])
-            save positions
+            pusher.destroy_position pos
+            save from_cache(pos.dealer)
 
           else 
             save pos
@@ -269,6 +259,7 @@ update_position_status = (callback) ->
 # TODO: handle error case gracefully! 
 take_position = (pos, callback) ->
   trades = (trade for trade in [pos.entry, pos.exit] when trade && !trade.created)
+  trades_left = trades.length 
 
   error = false
   for trade, idx in trades
@@ -279,18 +270,20 @@ take_position = (pos, callback) ->
       rate: trade.rate
       currencyPair: config.market
     , do (trade, idx) -> (err, resp, body) ->
-      if body.error
+
+      trades_left--
+
+      if !body || body.error
         error = true 
-        console.log "GOT ERROR TAKING POSITION: #{body.error}"
+        console.log "GOT ERROR TAKING POSITION", {pos, trades_left, err, resp, body}
       else 
         trade.order_id = body.orderNumber
         trade.created = tick.time 
 
-      if idx == trades.length - 1
+      if trades_left == 0 
         callback error
-        save pos
+        save pos 
 
-      save trade
 
 
 # TODO: test error state handling
@@ -303,18 +296,19 @@ cancel_unfilled = (pos, callback) ->
       command: 'cancelOrder'
       orderNumber: trade.order_id
     , do (trade) -> (err, resp, body) ->
+
       cancelations_left--
 
-      if body.error == 'Invalid order number, or you are not the person who placed the order.'
+      if body?.error == 'Invalid order number, or you are not the person who placed the order.'
         # this happens if the trade got canceled outside the system or on a previous run that failed
         delete body.error 
 
-      if body.error
-        console.log "GOT ERROR CANCELING POSITION: #{body.error}", pos
+      if !body || body.error
+        console.log "GOT ERROR CANCELING POSITION", {pos, cancelations_left, err, resp, body}
       else
-        console.log 'CANCELED POSITION', {pos, cancelations_left, err, resp, body}
+        console.log 'CANCELED POSITION'
         delete trade.order_id
-        save trade
+        save pos
 
       if cancelations_left == 0
         callback()
@@ -382,19 +376,5 @@ update_fee_schedule = (callback) ->
     save fee_schedule
     callback()
     
-
-##################
-# Accept commands from the client dash
-
-# bus('/change_settings').on_pub = (settings) ->
- 
-#   if settings.settings
-#     s = fetch("/strategies/#{settings.strategy}")
-#     extend s.settings, settings.settings
-#     delete settings.settings
-#     delete settings.strategy
-#     save settings
-#     save s
-
 
 

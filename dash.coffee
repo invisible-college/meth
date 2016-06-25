@@ -11,6 +11,7 @@ for f in [font, mono, special] when !(f in ['Courier new'])
   fonts.push f if fonts.indexOf(f) == -1
 
 include '/code/meth/shared.coffee', null, codebus
+include '/code/meth/statistics.coffee', null, codebus 
 
 loaded = false
 
@@ -23,11 +24,16 @@ dom.DASH = ->
   downloading = @loading() || !extend? 
 
   if !downloading && !loaded
-    strategy_filter()
+    dealer_filter()
     compute_stats()
     loaded = true
+  
 
-  computing = compute_stats.loading() || strategy_filter.loading() 
+  computing = compute_stats.loading() || dealer_filter.loading() 
+
+  # if loaded && !computing
+  #   forget '/all_data'
+  #   console.log 'FORGOT'  
 
   DIV
     style:
@@ -54,6 +60,7 @@ dom.DASH = ->
       SPAN(null, "Computing stuff!") 
 
     if !downloading
+      console.log 'not DOWN'
       DIV null, 
         HEADER key: 'header'
 
@@ -71,16 +78,19 @@ dom.DASH = ->
           TUNING key: 'tuning'
 
           ACTIVITY key: 'table'
+    else 
+      console.log 'DOWNLOADING!!!'
+      SPAN null
 
 
-strategy_filter = bus.reactive -> 
+dealer_filter = bus.reactive -> 
   focus = fetch 'focus'
 
-  strategies = fetch('/strategies')?.strategies
+  dealers = get_dealers()
 
-  inactive = (s for s in strategies when get_settings(s)?.retired )
+  inactive = (s for s in dealers when !get_settings(s).active )
 
-  return if strategy_filter.loading()
+  return if dealer_filter.loading()
 
   highlighted = focus.highlighted or []
 
@@ -88,13 +98,13 @@ strategy_filter = bus.reactive ->
 
   params = focus.params or {}
 
-  for strategy in strategies 
-    parts = strategy.split('&')
+  for dealer in dealers 
+    parts = dealer.split('&')
     s = parts[0]
     params[s] ||= []    
     for param in params[s] 
-      if s != strategy && parts.indexOf(param) == -1 && filtered.indexOf(strategy) == -1
-        filtered.push strategy 
+      if s != dealer && parts.indexOf(param) == -1 && filtered.indexOf(dealer) == -1
+        filtered.push dealer 
 
   if JSON.stringify(focus.highlighted) != JSON.stringify(highlighted) ||
      JSON.stringify(focus.filtered) != JSON.stringify(filtered) ||
@@ -106,12 +116,12 @@ strategy_filter = bus.reactive ->
     save focus
 
 
-dom.STRATEGY_SELECTOR = -> 
-  strategies = fetch('/strategies')?.strategies or []
+dom.DEALER_SELECTOR = -> 
+  dealers = get_dealers()
   focus = fetch 'focus'
   stats = fetch 'stats'
 
-  return SPAN null if compute_stats.loading() || strategy_filter.loading()
+  return SPAN null if compute_stats.loading() || dealer_filter.loading()
 
 
   DIV 
@@ -127,12 +137,12 @@ dom.STRATEGY_SELECTOR = ->
         color: ecto_green
         fontWeight: 600
         fontStyle: 'italic'
-      "Strategy selector"
+      "Dealers"
 
 
-    for strategy in strategies
-      continue if strategy in (focus.filtered or [])
-      do (strategy) =>
+    for dealer in dealers
+      continue if dealer in (focus.filtered or [])
+      do (dealer) =>
         DIV 
           style: 
             padding: '5px 12px'
@@ -140,20 +150,20 @@ dom.STRATEGY_SELECTOR = ->
             cursor: 'pointer'
             fontSize: 16
             fontFamily: special          
-            color: if strategy in (focus.highlighted or []) then attention_magenta else if @local.hover == strategy then 'white' else '#ccc'
+            color: if dealer in (focus.highlighted or []) then attention_magenta else if @local.hover == dealer then 'white' else '#ccc'
 
           onClick: => 
             
-            if strategy in (focus.highlighted or []) 
+            if dealer in (focus.highlighted or []) 
               focus.highlighted = []
             else 
-              focus.highlighted = [strategy]
+              focus.highlighted = [dealer]
             save focus 
 
-          onMouseEnter: => @local.hover = strategy; save @local 
+          onMouseEnter: => @local.hover = dealer; save @local 
           onMouseLeave: => @local.hover = null; save @local 
 
-          "#{strategy.replace(/_|&/g, ' ')}"
+          "#{dealer.replace(/_|&/g, ' ')}"
 
 
 
@@ -161,7 +171,7 @@ dom.TUNING = ->
   stats = fetch 'stats'
   focus = fetch 'focus'
 
-  return SPAN null if compute_stats.loading() || @loading() || strategy_filter.loading()
+  return SPAN null if compute_stats.loading() || @loading() || dealer_filter.loading()
 
   instances = (s for s in Object.keys(stats) when s not in ['key','price'] && s not in focus.filtered)
 
@@ -329,7 +339,7 @@ dom.TUNE_STRATEGY = ->
 
 
 
-strand_name = (name, include_parent) -> 
+dealer_name = (name, include_parent) -> 
   parts = name.split('&')
   parent = parts.shift()
 
@@ -350,7 +360,7 @@ strand_name = (name, include_parent) ->
   else 
     name
 
-deconstruct_strand = (name) -> 
+deconstruct_dealer_name = (name) -> 
   parts = name.split('&')
   parent = parts.shift()
   params = {}
@@ -360,7 +370,6 @@ deconstruct_strand = (name) ->
       param = p.split('=')
       params[param[0]] = param[1]
 
-    
   else 
     parent = 'all'
 
@@ -378,27 +387,28 @@ strategy_hierarchy = ->
 
   #focus = fetch 'focus'
 
-  strands =  (strat for strat in (fetch('/strategies').strategies or []) when !get_settings(strat).series)
+  # TODO: eliminate dependency on fetching settings and strategies
+  dealers =  (dealer for dealer in get_dealers() when !get_settings(dealer).series)
   strategies = {}
 
   root = strategies.all =
     name: 'all'
     children: []
 
-  for strand in strands 
-    strand = deconstruct_strand strand 
-    # continue if strand in focus.filtered
+  for dealer in dealers 
+    deconstructed = deconstruct_dealer_name dealer 
+    # continue if deconstructed in focus.filtered
 
 
-    if strand.parent != 'all' && !strategies[strand.parent]
-      strategies[strand.parent] = 
-        name: strand.parent
+    if deconstructed.parent != 'all' && !strategies[deconstructed.parent]
+      strategies[deconstructed.parent] = 
+        name: deconstructed.parent
         parent: 'all'
         children: []
-      root.children.push strand.parent
+      root.children.push deconstructed.parent
 
-    strategies[strand.name] = strand
-    strategies[strand.parent].children.push strand.name
+    strategies[deconstructed.name] = deconstructed
+    strategies[deconstructed.parent].children.push deconstructed.name
   strategies
 
 
@@ -407,7 +417,7 @@ dom.PERFORMANCE = ->
   focus = fetch 'focus'
   time = fetch '/time'
 
-  return SPAN(null, "Performance waiting for data") if compute_stats.loading() || @loading() || strategy_filter.loading()
+  return SPAN(null, "Performance waiting for data") if compute_stats.loading() || @loading() || dealer_filter.loading()
 
   if focus.highlighted?.length > 0
     strat = focus.highlighted[0]
@@ -464,7 +474,7 @@ dom.PERFORMANCE = ->
               display: 'inline-block'
               maxWidth: 600
               fontSize: 16
-            strand_name s, false 
+            dealer_name s, false 
     ]
 
     ['Profit*', (s) -> 
@@ -629,15 +639,15 @@ dom.ACTIVITY = ->
   focus = fetch 'focus'
   time = fetch '/time'
 
-  return SPAN null if compute_stats.loading() || strategy_filter.loading() || !cached_positions.all
+  return SPAN null if compute_stats.loading() || dealer_filter.loading() || !cached_positions.all
 
   in_range = (t) -> time.start <= t && t <= time.end
 
-  positions = (pos for pos in cached_positions.all.all when  pos.strategy not in focus.filtered \
+  positions = (pos for pos in cached_positions.all.all when  pos.dealer not in focus.filtered \
                                                           && (focus.highlighted.length == 0 || \
                                                               focus.highlighted[0] == 'all' || \ 
-                                                              pos.strategy.indexOf(focus.highlighted[0]) > -1 || \
-                                                              pos.strategy in focus.highlighted))
+                                                              pos.dealer.indexOf(focus.highlighted[0]) > -1 || \
+                                                              pos.dealer in focus.highlighted))
 
   positions.sort (a,b) -> (if b.closed && in_range(b.closed) then b.closed else b.created) - \
                           (if a.closed && in_range(a.closed) then a.closed else a.created)
@@ -645,7 +655,7 @@ dom.ACTIVITY = ->
   cols = [
     # ['', (pos) -> pos.key]
 
-    ['Strategy', (pos) -> pos.strategy.replace(/_|&/g,' ')]
+    ['Strategy', (pos) -> pos.dealer.replace(/_|&/g,' ')]
     ['Created', (pos) -> prettyDate(pos.created)]
     ['Duration', (pos) -> 
       SPAN 
@@ -781,7 +791,7 @@ dom.GRAPH_TIME_VS_RATE = ->
   focus = fetch 'focus'
   time = fetch '/time'
 
-  return SPAN null if compute_stats.loading() || strategy_filter.loading()
+  #return SPAN null if compute_stats.loading() || dealer_filter.loading()
 
   in_range = (t) -> time.start <= t && t <= time.end
 
@@ -793,10 +803,10 @@ dom.GRAPH_TIME_VS_RATE = ->
   return SPAN null if !cached_positions[@props.segment]
 
   all = cached_positions[@props.segment].all
-  if cached_positions['price']
-    all = all.concat cached_positions['price'].all
+  if cached_positions['/price']
+    all = all.concat cached_positions['/price'].all
 
-  all_positions = (b for b in all when b.series_data || (b.strategy not in focus.filtered))
+  all_positions = (p for p in all when p.series_data || (p.dealer not in focus.filtered))
 
   ticker = fetch '/ticker'
 
@@ -868,7 +878,7 @@ dom.GRAPH_TIME_VS_RATE = ->
 
         for group in groups 
           for pos in group
-            hide = focus.highlighted?.length > 0 && !(pos.strategy in focus.highlighted || 'all' in focus.highlighted || pos.strategy in (hierarchy[focus.highlighted[0]]?.children or [])  ) && !pos.series_data 
+            hide = focus.highlighted?.length > 0 && !(pos.dealer in focus.highlighted || 'all' in focus.highlighted || pos.dealer in (hierarchy[focus.highlighted[0]]?.children or [])  ) && !pos.series_data 
             continue if hide #|| (!pos.reset && !pos.series_data)
 
             pnts = []
@@ -878,27 +888,23 @@ dom.GRAPH_TIME_VS_RATE = ->
             G 
               key: pos.key 
 
-
-
               for trade in [pos.entry, pos.exit] when trade && in_range(trade.created)
                 x = if !trade.entry && trade.closed && in_range(trade.closed) then trade.closed else trade.created
                 x = width * ( (x - start) / (end - start))
                 y = height * (price_range[1] - trade.rate) / (price_range[1] - price_range[0])
                 pnts.push [x,y]
 
-                # continue if trade.closed && !trade.originally_created
+                # continue if trade.closed
                 
                 bord = null
 
-                if trade.originally_created
-                  color = bright_red
-                # else if trade.closed && in_range(trade.closed)
+                # if trade.closed && in_range(trade.closed)
                 #   color = 'white' #light_blue
                 # else if !pos.exit 
                 #   color = ecto_green
                 # else  
                 #   color = attention_magenta
-                else if trade.type == 'buy'
+                if trade.type == 'buy'
                   color = ecto_green
                 else if trade.type == 'sell'
                   color = feedback_orange
@@ -929,7 +935,7 @@ dom.GRAPH_TIME_VS_RATE = ->
                   bord = null
 
                 CIRCLE 
-                  key: trade.key
+                  key: "#{pos.dealer}-#{trade.created}-#{trade.entry}"
                   cx: x
                   cy: y
                   r: s
@@ -1038,11 +1044,6 @@ dom.BOX_WISKER = ->
 dom.HEADER = -> 
   td_style = 
     verticalAlign: 'top'
-    #borderRight: "1px solid #{ecto_green}"
-
-  # b = fetch("/bullish")?.bullish
-  #return SPAN null if @loading()
-
 
   DIV 
     style:
@@ -1065,7 +1066,7 @@ dom.HEADER = ->
       # TD
       #   style: extend {}, td_style,
       #     width: '100%'
-      #   STRATEGY_SELECTOR key: 'selector'
+      #   DEALER_SELECTOR key: 'selector'
       TD 
         style: extend {}, td_style
         TICKER key: 'ticker'
@@ -1174,7 +1175,7 @@ computing = 0
 
 at_least_one = false 
 
-series_data = ['price']
+series_data = ['/price']
 
 computing_kpi = false 
 
@@ -1189,10 +1190,9 @@ window.compute_stats = bus.reactive ->
     save time 
 
   if computing_kpi || compute_stats.loading() || (Date.now() - computing < 100000 && at_least_one && last_time == JSON.stringify(time))
-    
     return
 
-  strategies = (strat for strat in (fetch('/strategies').strategies or []) when !get_settings(strat).series)
+  dealers = (dealer for dealer in get_dealers() when !get_settings(dealer).series)
 
 
   started_computing_at = Date.now()
@@ -1200,14 +1200,14 @@ window.compute_stats = bus.reactive ->
   
   computing = Date.now()
 
-  all_stats = bus.cache['stats'] or {key: 'stats'}
+  all_stats = fetch 'stats' #bus.cache['stats'] or {key: 'stats'}
 
   if !at_least_one
 
     if !time.earliest 
       every_position = []
-      for name in strategies #.concat series_data
-        every_position = every_position.concat (fetch("/positions/#{name}").positions or [])
+      for name in dealers #.concat series_data
+        every_position = every_position.concat (pos for pos in fetch(name).positions)
 
       mint = Infinity
       for p in every_position
@@ -1226,37 +1226,40 @@ window.compute_stats = bus.reactive ->
 
   all_positions = []
   strat_positions = {}
-  for name in strategies
-    strat_positions[name] = (p for p in (fetch("/positions/#{name}").positions or []) when in_range(p.created))
+  for name in dealers
+    strat_positions[name] = (p for p in fetch(name).positions when in_range(p.created))
     all_positions = all_positions.concat strat_positions[name]
   strat_positions.all = all_positions
-  strategies.push 'all'  
+  dealers.push 'all'  
 
   return if all_positions.length == 0
 
   hierarchy = strategy_hierarchy()
+
   for strat in hierarchy.all.children
     s = hierarchy[strat]
+    
+
     if s.children 
       positions = []
 
       for child in s.children 
-        positions = positions.concat (p for p in (fetch("/positions/#{child}").positions or []) when in_range(p.created))      
+        positions = positions.concat (p for p in fetch(child).positions when in_range(p.created))      
 
       strat_positions[s.name] = positions
-      strategies.push s.name
+      dealers.push s.name
 
 
   for name in series_data
-    if bus.cache["/positions/#{name}"]
+    if bus.cache[name]?.dealers
       cached_positions[name] = 
-        all: (p for p in (fetch("/positions/#{name}").positions or []) when in_range(p.created))
+        all: (p for p in fetch(fetch(name).dealers[0]).positions when in_range(p.created))
 
 
   console.log 'starting to compute'
 
 
-  for name in strategies
+  for name in dealers
     positions = strat_positions[name] 
     all = positions
 
@@ -1330,19 +1333,23 @@ window.compute_stats = bus.reactive ->
       reset: (cached_positions[k].reset or []).length
 
   computing_kpi = true 
-  #setTimeout -> 
+
   console.log 'computing kpi'
-  kpi strategies, all_stats, ->
+  kpi dealers, all_stats, ->
     computing_kpi = false
     console.log "COMPUTED in #{Date.now() - started_computing_at}"
     at_least_one = true
-    save all_stats
+
+    setTimeout ->
+      console.log 'saving', all_stats
+      save all_stats
+    , 0
 
 window.memoize = {}
 last_completed_trade = null
 
 
-kpi = (strategies, all_stats, callback) ->
+kpi = (dealers, all_stats, callback) ->
   ####################  
   # now compute KPI
 
@@ -1358,7 +1365,7 @@ kpi = (strategies, all_stats, callback) ->
 
   last_trade = trades[trades.length - 1]
 
-  if last_completed_trade != last_trade
+  if true || last_completed_trade != last_trade
 
     last_day_rates = []
     i = trades.length - 1
@@ -1369,10 +1376,9 @@ kpi = (strategies, all_stats, callback) ->
     # would be nice to get actual market prices in last day
     quartiles = Math.quartiles last_day_rates 
 
-    for strat in strategies
-
-      trades = (pos.entry for pos in cached_positions[strat].all when pos.entry?.closed)
-      trades = trades.concat (pos.exit for pos in cached_positions[strat].all when pos.exit?.closed)
+    for dealer in dealers
+      trades = (pos.entry for pos in cached_positions[dealer].all when pos.entry?.closed)
+      trades = trades.concat (pos.exit for pos in cached_positions[dealer].all when pos.exit?.closed)
 
       trades.sort (a,b) -> a.closed - b.closed 
 
@@ -1389,15 +1395,15 @@ kpi = (strategies, all_stats, callback) ->
 
 
 
-      memoize[strat] ||= []
+      memoize[dealer] ||= []
 
-      successful = cached_positions[strat].successful.slice()
+      successful = cached_positions[dealer].successful.slice()
       successful.sort (a,b) -> a.closed - b.closed
 
-      created_by = cached_positions[strat].all.slice()
+      created_by = cached_positions[dealer].all.slice()
       created_by.sort (a,b) -> a.created - b.created
 
-      closed_by = cached_positions[strat].all.slice()
+      closed_by = cached_positions[dealer].all.slice()
       closed_by.sort (a,b) -> (a.closed or Infinity) - (b.closed or Infinity)
 
 
@@ -1407,8 +1413,8 @@ kpi = (strategies, all_stats, callback) ->
       positive = 0
       for trade, idx in trades
 
-        if memoize[strat][idx]
-          mem = memoize[strat][idx]
+        if memoize[dealer][idx]
+          mem = memoize[dealer][idx]
 
         else 
           if idx == 0 
@@ -1421,7 +1427,7 @@ kpi = (strategies, all_stats, callback) ->
               transacted: 0
           else 
             mem = {}
-            for k,v of memoize[strat][idx-1]
+            for k,v of memoize[dealer][idx-1]
               mem[k] = v 
 
           if trade.type == 'buy'
@@ -1450,7 +1456,7 @@ kpi = (strategies, all_stats, callback) ->
             break if !pos.closed || pos.closed > trade.closed
             mem.closed_by_idx++
 
-          memoize[strat].push mem
+          memoize[dealer].push mem
 
         #series.current_price.push  [trade.closed, value(mem.eth, mem.btc, trade.rate)]
         
@@ -1481,7 +1487,6 @@ kpi = (strategies, all_stats, callback) ->
         series.stability.push [trade.closed, stability]
 
         series.score.push [trade.closed, prof * stability]
-
 
         if idx == trades.length - 1
           # ...and cap it off with the metrics according to the latest price
@@ -1517,10 +1522,15 @@ kpi = (strategies, all_stats, callback) ->
           series.score.push [last.closed, prof * stability]
 
 
-      all_stats[strat].metrics = series
+      all_stats[dealer].key = "statsss#{dealer}"
+      series.key = "statsss#{dealer}metrics"
+      all_stats[dealer].metrics = series
+
+      #save all_stats[dealer]
 
     last_completed_trade = last_trade
 
+  console.log 'done with KPI'
   callback()
 
 
@@ -1775,15 +1785,15 @@ indicators =
     profit = stats[s].metrics.profit_index   #indicators.profit(s,stats)
     profit = profit[profit.length - 1]?[1] or indicators.profit(s,stats)
 
-    settings = get_settings(s)
-    if !settings
+    budget = fetch(s).budget
+    if !budget
       hierarchy = strategy_hierarchy()
       h = hierarchy[s]
       while h.children 
         h = hierarchy[h.children[0]]
-      settings = get_settings(h.name)
+      budget = fetch(h.name).budget
     
-    invested = 2 * settings.position_amount * open
+    invested = 2 * budget * open
 
     100 * profit / invested 
 

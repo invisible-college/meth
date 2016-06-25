@@ -4,16 +4,16 @@ progress_bar = require('progress')
 require './shared'
 history = require './trade_history'
 
+global.pusher = require('./pusher')
+
 global.config = {}
-module.exports = (conf, pusher) -> 
-  global.pusher = pusher
+module.exports = (conf) -> 
+  
 
   extend config,
-    free_funds_if_needed: false
     tick_interval: 60 # in seconds
     simulation_width: 12 * 24 * 60 * 60
     market: 'BTC_ETH'
-    trade_success_rate: 1
     trade_lag: 20
     deposit:
       BTC: 35
@@ -27,9 +27,10 @@ module.exports = (conf, pusher) ->
 
     ts = config.end or now()
 
-    history_width = history.longest_requested_history() + config.simulation_width
+    pusher.init(history, true)
+    history_width = history.longest_requested_history + config.simulation_width
 
-    console.log "...loading #{ ((ts - history_width) / 60 / 60 / 24).toFixed(2) } days of trade history, relative to #{ts}"
+    console.log "...loading #{ (history_width / 60 / 60 / 24).toFixed(2) } days of trade history, relative to #{ts}"
     history.load ts - history_width, ts, -> 
       console.log "...experimenting!"
       simulate ts
@@ -56,7 +57,7 @@ global.tick =
   time: 0 
 
 simulate = (ts) ->   
-
+  ts = Math.floor(ts)
   time = fetch('/time')
   extend time, 
     earliest: ts - config.simulation_width
@@ -101,7 +102,7 @@ simulate = (ts) ->
   console.log "Deposited #{balance.deposits.ETH}ETH and #{balance.deposits.BTC}BTC"
 
 
-  start = ts - config.simulation_width - history.longest_requested_history()
+  start = ts - config.simulation_width - history.longest_requested_history
   tick.time = ts - config.simulation_width
 
   start_idx = history.trades.length - 1
@@ -122,17 +123,6 @@ simulate = (ts) ->
     width: 40
     total: end_idx 
 
-
-  # clear previous simulation data
-  all_positions = {}
-  open_positions = {}
-  for strat in get_strategies()
-    settings = get_settings(strat)
-    all_positions[strat] = fetch("/positions/#{strat}")
-    all_positions[strat].positions = []
-    save all_positions[strat]
-    open_positions[strat] = [] if !settings.series
-
   ticks = 0
     
   started_at = Date.now()
@@ -142,8 +132,8 @@ simulate = (ts) ->
 
     if tick.time > ts - config.tick_interval * 10
       save balance
-      for k,v of all_positions
-        save v 
+      for name in get_dealers()
+        save from_cache name
 
       console.log "\nDone simulating! That took #{(Date.now() - started_at) / 1000} seconds"
 
@@ -180,19 +170,16 @@ simulate = (ts) ->
 
 
     # evaluate our options 
-    pusher.hustle open_positions, all_positions, balance, trades
+    pusher.hustle balance, trades
 
     # check if any positions have subsequently closed
     yyy = Date.now()
-    update_position_status open_positions, end_idx, balance
+    update_position_status end_idx, balance
     t_.x += Date.now() - yyy
 
     yyy = Date.now()
-    update_balance balance, open_positions
+    update_balance balance
     t_.y += Date.now() - yyy
-
-    if config.exposure && history.trades.length > 0
-      pusher.set_exposure(config.exposure, history.trades[0].rate)
 
     t_.qtick += Date.now() - t
 
@@ -205,16 +192,16 @@ simulate = (ts) ->
 
 
 
-update_balance = (balance, open_positions) -> 
+update_balance = (balance) -> 
 
   btc = eth = btc_on_order = eth_on_order = 0
 
-  for strategy, positions of open_positions
-    continue if get_settings(strategy).series 
+  for dealer, positions of open_positions
+    continue if get_settings(dealer).series
     for pos in positions
 
-      buy = if pos.entry.type == 'buy' then pos.entry else pos.exit 
-      sell = if pos.entry.type == 'buy' then pos.exit else pos.entry        
+      buy = get_buy(pos) 
+      sell = get_sell(pos) 
 
       if buy
         # used or reserved for buying trade.amount eth
@@ -246,15 +233,17 @@ update_balance = (balance, open_positions) ->
 
 
 position_status = {}
-update_position_status = (open_positions, end_idx, balance) -> 
+update_position_status = (end_idx, balance) -> 
 
   for name, open of open_positions 
     closed = []
     for pos in open 
       for trade in [pos.entry, pos.exit] when trade && !trade.closed
-        position_status[trade.key] ||= predicted_exit trade, end_idx
-        if tick.time >= position_status[trade.key]
-          trade.closed = position_status[trade.key]
+        key = "#{pos.dealer}-#{trade.created}-#{trade.entry}"
+        position_status[key] ||= predicted_exit trade, end_idx
+
+        if tick.time >= position_status[key]
+          trade.closed = position_status[key]
       if pos.entry?.closed && pos.exit?.closed
         pos.closed = Math.max pos.entry.closed, pos.exit.closed
         closed.push pos 
@@ -291,7 +280,7 @@ precompute_price_ranges = (end, idx) ->
 
   for idx in [idx..0] by -1
     break if history.trades[idx].date > end 
-    #console.log idx
+
     segment = Math.floor history.trades[idx].rate * 1 / segment_range
 
     if segment != current_segment
@@ -324,22 +313,15 @@ predicted_exit = (my_trade, end_idx) ->
           
           continue if trade.date < my_trade.created + config.trade_lag
 
-          if (buy  && trade.rate < my_trade.rate) || \
+          if ( buy && trade.rate < my_trade.rate) || \
              (!buy && trade.rate > my_trade.rate)
 
-            if config.trade_success_rate < 1
-              time_from_trade = trade.date - my_trade.created 
+            amount += trade.amount 
 
-              # higher liklihood the farther away from initial trade
-              chance_of_success = config.trade_success_rate + time_from_trade *  time_from_trade / (60 * 60 * 60 * 60)
+            if amount >= my_trade.amount
+              t_.z += Date.now() - zzz
 
-            if config.trade_success_rate == 1 || Math.random() < chance_of_success
-              amount += trade.amount 
-
-              if amount >= my_trade.amount
-                t_.z += Date.now() - zzz
-
-                return trade.date
+              return trade.date
     
     if buy 
       segment--

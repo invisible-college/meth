@@ -5,9 +5,25 @@ if !module?
 module.exports = 
 
   get_settings: (name) ->
-    if !cached_settings[name] && fetch("/strategies/#{name}").settings?
-      cached_settings[name] = fetch("/strategies/#{name}").settings 
+    if !cached_settings[name] && fetch(name).settings?
+      cached_settings[name] = fetch(name).settings
     cached_settings[name]
+
+  get_strategies: -> 
+    operation = fetch '/operation'
+    strategies = []
+    for name, strategy of operation when name != 'key'
+      strategies.push name 
+    strategies
+
+  get_dealers: (load_from_cache) -> 
+
+    operation = if load_from_cache then from_cache('/operation') else fetch '/operation'
+    dealers = []
+    for name, strategy of operation when name != 'key'
+      dealers = dealers.concat strategy.dealers 
+    dealers
+
 
   extend: (obj) ->
     obj ||= {}
@@ -28,15 +44,29 @@ module.exports =
     for k,v of exports
       top[k] = v 
 
-  get_strategies: -> 
-    all_strategies = fetch('/strategies')
-    all_strategies.strategies ||= []
-    (s for s in all_strategies.strategies) 
-
   now: -> Math.floor((new Date()).getTime() / 1000)
 
+  get_buy:  (pos) -> 
+    if pos.entry.type == 'buy' then pos.entry else pos.exit
+  get_sell: (pos) -> 
+    if pos.entry.type == 'buy' then pos.exit else pos.entry
 
 
+  get_name: (base, params, all) ->
+    if base[0] != '/'
+      name = "/#{base}" 
+    else 
+      name = base
+    for k,v of params when !all || all[k].length > 1
+      if is_num v
+        if Math.abs(v) < 1
+          v *= 100
+        name += "&#{k}=#{v}"
+      else
+        name += "&#{k}=#{v}"
+    name 
+
+  from_cache: (key) -> bus.cache[key]
 
 module.exports.make_global module.exports
 

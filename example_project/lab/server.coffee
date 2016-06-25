@@ -6,13 +6,8 @@ bus.serve {port: 9391}
 bus.honk = false
 
 
-pusher = require '../pusher' # require before strategies
 my_strategies = require '../strategies'
 strategizer = require '../meth/strategizer'
-
-
-for name, strat of my_strategies
-  pusher.register_strategy name, strat 
 
 
 lab = require('../meth/lab')
@@ -25,6 +20,7 @@ lab = require('../meth/lab')
     BTC: 10000
     ETH: 10000
 
-, pusher
+for name, strat of my_strategies
+  pusher.register_strategy name, strat 
 
 operation.start()
