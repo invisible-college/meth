@@ -1,68 +1,18 @@
 require './shared'
-history = require './trade_history'
-poloniex = require './poloniex'
+global.history = require './trade_history'
+exchange = require './exchange'
 
 global.pusher = require('./pusher')
 
 global.config = {}
 
-module.exports = (conf) ->
-  
-  extend config,
-    tick_interval: 60
-    market: 'BTC_ETH'
-    take_position: take_position
-    cancel_unfilled: cancel_unfilled
-    take_position: take_position
-
-  , conf
-
-  start: ->
-    # migrate_data()
-
-    console.log 'STARTING METH'
-
-
-    pusher.init(history)
-
-    console.log "...updating deposit history"
-
-    update_deposit_history ->
-      update_fee_schedule -> 
-        history_width = history.longest_requested_history
-
-        console.log "...loading past #{(history_width / 60 / 60 / 24).toFixed(2)} days of trade history"
-        ts = now()
-
-        history.load ts - history_width, ts, ->
-          console.log "...connecting to Poloniex live updates"
-          history.subscribe_to_poloniex()
-
-          console.log "...updating account balances"
-
-          update_account_balances ->
-  
-            update_position_status ->
-
-              console.log "...hustling!"
-
-              one_tick()
-              setInterval one_tick, config.tick_interval * 1000
-
-
-
-
-##################
-# Globals
-
+# Tracking lag
 laggy = false 
 all_lag = []
 LAGGY_THRESHOLD = 3
 global.lag_logger = (lag) -> 
   all_lag.push lag
   laggy = all_lag.length == 0 || Math.max(lag) > LAGGY_THRESHOLD
-
-
 
 
 #########################
@@ -75,49 +25,46 @@ global.tick =
 
 one_tick = ->
   return if tick.lock
-
-
+     
   tick.lock = true
-  trades_to_execute = 0
-
   tick.time = now()
 
-  if !laggy
-    to_update = new_position = null 
+  console.log 'TICKING!', all_lag
 
-    balance = fetch('/balances')
+  update_position_status ->
+    update_account_balances ->
+      history.load_price_data tick.started - tick.history_to_keep, now(), ->
 
-    pusher.reset_open_and_all_positions()
+        setTimeout -> # free thread to process any last trades
+          tick.time = now()
+          if !laggy
+            balance = from_cache('balances')
+            pusher.reset_open()
+            pusher.hustle balance, history.trades
 
-    pusher.hustle balance, history.trades
+          # wait for the trades or cancelations to complete
+          i = setInterval ->
 
-    for name in get_dealers()
-      save from_cache(name)
+            if exchange.all_clear()
 
-  # wait for the trades or cancelations to complete, then do accounting work
-  i = setInterval ->
-    if poloniex.all_clear()
+              clearInterval i
 
-      clearInterval i
+              history.prune()
 
-      history.prune()
+              for name in get_all_actors()
+                bus.save from_cache(name)
 
-      update_position_status ->
-        update_account_balances ->
-          tick.lock = false  #...and now we're done with this tick
-          all_lag = []
 
-          earliest = Infinity
-          for name, data of all_positions
-            earliest = Math.min earliest, (Math.min.apply null, (p.created for p in data))
+              tick.lock = false  #...and now we're done with this tick
+              all_lag = []
 
-          time = fetch('/time')
-          extend time, 
-            earliest: earliest
-            latest: tick.time
-          save time          
-
-  , 10
+              time = from_cache('time')
+              extend time, 
+                earliest: if time.earliest? then time.earliest else tick.started
+                latest: tick.time
+              bus.save time          
+          , 10
+  
  
  
 
@@ -127,18 +74,19 @@ one_tick = ->
 
 
 update_position_status = (callback) ->
+  time = from_cache 'time'
 
-  poloniex.query_trading_api
-    command: 'returnTradeHistory'
-    currencyPair: config.market
-    start: 0
+  exchange.get_your_trade_history 
+    c1: config.c1 
+    c2: config.c2 
+    start: 0 # time.earliest
     end: now()
-  , (err, resp, trade_history) ->
+  , (trade_history) ->
 
-    poloniex.query_trading_api
-      command: 'returnOpenOrders'
-      currencyPair: config.market
-    , (err, resp, all_open_orders) ->
+    exchange.get_your_open_orders
+      c1: config.c1 
+      c2: config.c2 
+    , (all_open_orders) ->
 
       if !trade_history || !all_open_orders || trade_history.error || all_open_orders.error
         callback?()
@@ -146,105 +94,120 @@ update_position_status = (callback) ->
 
       completed_trades = {}
       for trade in trade_history
-        completed_trades[trade.orderNumber] ||= [] 
-        completed_trades[trade.orderNumber].push trade
+        completed_trades[trade.order_id] ||= [] 
+        completed_trades[trade.order_id].push trade
 
       open_orders = {}
       for trade in all_open_orders
-        open_orders[trade.orderNumber] = trade
+        open_orders[trade.order_id] = trade
 
-      # console.log completed_trades
-      # console.log 'strange!', completed_trades['53294627173'], completed_trades['53289725080']
+      for name in get_dealers()
+        positions = from_cache(name).positions
+        # missing_id = []
 
-      for name, positions of all_positions 
-        missing_id = []
-
-        for pos in positions
-          found = true
-
+        for pos in positions when !pos.closed
           before = JSON.stringify(pos)
 
+          for t in [pos.entry, pos.exit] when t && !t.closed && t.orders?.length > 0 
 
-          for t in [pos.entry, pos.exit] when t
-            found &&= !!(completed_trades[t.order_id] || open_orders[t.order_id])            
+            completed = true
+            t.fills = []
+            for order_id in t.orders when order_id
+              if completed_trades[order_id]
+                t.fills = t.fills.concat completed_trades[order_id]
+              else 
+                completed = false
 
+            if t.fills.length > 0 
+              t.to_fill = t.amount - Math.summation (f.amount for f in t.fills)
 
-            if t.order_id && completed_trades[t.order_id] && !open_orders[t.order_id]
-              total = 0
-              fees = 0
-              last = 0
-              amount = 0
+            
+            if t.current_order && completed_trades[t.current_order] && !open_orders[t.current_order] 
+              if t.to_fill > t.amount * .0001
+                
+                console.error
+                  message: 'Exchange thinks we\'ve completed the trade, but our filled amount does not seem to match'
+                  trade: t 
+                  fills: t.fills 
+                  to_fill: t.to_fill
+                  pos: pos.key
 
-              for ct in completed_trades[t.order_id]
-                total += parseFloat ct.total
-                fees += parseFloat(ct.fee) * ct.amount * (if t.type == 'sell' then t.rate else 1)
-                amount += parseFloat ct.amount
+              else 
 
-                d = Date.parse(ct.date + " +0000")
-                if d > last 
-                  last = d 
+                total = 0
+                fees = 0
+                last = 0
+                amount = 0
 
-              t.amount = Math.round(100000 * amount) / 100000
-              t.total = Math.round( 100000 * total) / 100000
-              t.fee = fees
-              t.closed = last / 1000
+                for order_id in t.orders when order_id 
+                  if !(order_id of completed_trades)
+                    for fill in t.fills 
+                      if fill.order_id == order_id
+                        console.assert false, 
+                          message: 'Order id not found in completed trades'
+                          order_id: order_id
+                          trade: t
+                          order: t.orders 
+                          fills: t.fills
+                    continue
 
-          if found && pos.entry?.closed && pos.exit?.closed
+                  for ct in completed_trades[order_id]
+                    total += parseFloat ct.total
+                    fees += ct.fee
+                    amount += parseFloat ct.amount
 
+                    if ct.date > last 
+                      last = ct.date
+
+                t.amount = Math.round(100000 * amount) / 100000
+                t.total = Math.round( 100000 * total) / 100000
+                t.fee = fees
+                t.closed = last / 1000
+
+          if pos.entry?.closed && pos.exit?.closed
             buy = if pos.entry.type == 'buy' then pos.entry else pos.exit
             sell = if pos.entry.type == 'buy' then pos.exit else pos.entry
-
-            profit = (sell.total - buy.total - sell.fee) / pos.exit.rate + (buy.amount - sell.amount - sell.fee)
-
-            extend pos,
-              closed: Math.max pos.entry.closed, pos.exit.closed
-              profit: profit
-              returns: 100 * profit / sell.amount
+            pos.profit = (sell.total - buy.total - sell.fee) / pos.exit.rate + (buy.amount - sell.amount - buy.fee)
+            pos.closed = Math.max pos.entry.closed, pos.exit.closed
+          
+          if pos.entry?.closed && pos.rebalancing
+            pos.closed = pos.entry.closed
 
           changed = JSON.stringify(pos) != before
           if changed || !pos.closed
-            
             if changed
               console.log 'CHANGED!', pos
-            save pos
+            bus.save pos
 
-            # for some reason, statebus isn't sending updates to individual positions
-            # through to the dash. But new positions go through. So I'll update something
-            # on the key that seems to work.
-            # positions.updated ||= 0
-            # positions.updated += 1
-            # save positions
+          # if (pos.exit && !pos.exit.order_id) || (pos.entry && !pos.entry.order_id)
+          #   missing_id.push pos 
 
 
-          missing_id.push pos if (pos.exit && !pos.exit.order_id) || (pos.entry && !pos.entry.order_id)
+        # # These positions had something go wrong ... one or both of the trades don't have an order_id
+        # for pos in missing_id
+        #   console.log "ADJUSTING FOR MISSING ID!", pos
+        #   for trade in ['exit', 'entry']
+        #     if pos[trade] && !pos[trade].order_id 
+        #       pos.original_exit = pos[trade].rate if !pos.original_exit?
+        #       delete pos[trade]
+        #       delete pos.expected_profit if pos.expected_profit
+        #       pos.reset = tick.time if !pos.reset 
+
+        #   if pos.exit && !pos.entry 
+        #     pos.entry = pos.exit 
+        #     delete pos.exit
+        #     save pos
+
+        #   else if !pos.entry && !pos.exit 
+        #     pusher.destroy_position pos
+        #     save from_cache(pos.dealer)
+
+        #   else 
+        #     save pos
 
 
-        # These positions had something go wrong ... one or both of the trades don't have an order_id
-        for pos in missing_id
-          console.log "ADJUSTING FOR MISSING ID!", pos
-          for trade in ['exit', 'entry']
-            if pos[trade] && !pos[trade].order_id 
-              pos.original_exit = pos[trade].rate if !pos.original_exit?
-              delete pos[trade]
-              delete pos.expected_profit if pos.expected_profit
-              delete pos.expected_return if pos.expected_return    
-              pos.reset = tick.time if !pos.reset 
-
-          if pos.exit && !pos.entry 
-            pos.entry = pos.exit 
-            delete pos.exit
-            save pos
-
-          else if !pos.entry && !pos.exit 
-            pusher.destroy_position pos
-            save from_cache(pos.dealer)
-
-          else 
-            save pos
-
-
-        callback?()
-     
+      callback?()
+       
 
 
 
@@ -253,128 +216,463 @@ update_position_status = (callback) ->
 
 
 ############################
-# Poloniex interface
+# Live trading interface
 
 
-# TODO: handle error case gracefully! 
 take_position = (pos, callback) ->
-  trades = (trade for trade in [pos.entry, pos.exit] when trade && !trade.created)
+
+  trades = (trade for trade in [pos.entry, pos.exit] when trade && !trade.current_order)
   trades_left = trades.length 
+
+  for trade, idx in trades
+    console.log trade
+    console.assert trade.amount? && trade.rate?, 
+      message: 'Ummmm, you have to give an amount and a rate to place a trade...'
+      trade: trade
 
   error = false
   for trade, idx in trades
 
-    poloniex.query_trading_api
-      command: trade.type
-      amount: trade.amount
+    exchange.place_order
+      type: trade.type
+      amount: trade.to_fill
       rate: trade.rate
-      currencyPair: config.market
-    , do (trade, idx) -> (err, resp, body) ->
+      currency_pair: "#{config.c1}_#{config.c2}"
+    , do (trade, idx) -> (result) ->
 
       trades_left--
 
-      if !body || body.error
+      if result.error 
         error = true 
-        console.log "GOT ERROR TAKING POSITION", {pos, trades_left, err, resp, body}
+        err = result.error     
+        console.log "GOT ERROR TAKING POSITION", {pos, trades_left, err}
+        
       else 
-        trade.order_id = body.orderNumber
-        trade.created = tick.time 
+        trade.current_order = result.order_id
+        trade.orders ||= []
+        if trade.current_order && trade.current_order not in trade.orders 
+          trade.orders.push trade.current_order
 
       if trades_left == 0 
         callback error
-        save pos 
+        bus.save pos if pos.key
+
+
+update_exit = (opts, callback) -> 
+  {pos, trade, rate, amount} = opts 
+
+  cb = (result) -> 
+    if result.error
+      err = result.error
+      console.log "GOT ERROR MOVING POSITION", {pos, err}
+    else
+
+      new_order = result.order_id
+      if new_order && new_order not in trade.orders 
+        trade.orders.push new_order
+      trade.current_order = new_order
+      bus.save pos if pos.key
+
+      console.log 'MOVED POSITION'
+
+    callback result.error
+
+  if trade.current_order
+    exchange.move_order
+      order_id: trade.current_order
+      rate: rate
+      amount: amount
+    , cb
+
+  else 
+    exchange.place_order
+      type: trade.type
+      amount: amount
+      rate: rate
+      currency_pair: "#{config.c1}_#{config.c2}"
+    , cb
 
 
 
-# TODO: test error state handling
+
 cancel_unfilled = (pos, callback) ->
-  trades= (trade for trade in [pos.exit, pos.entry] when trade && !trade.closed && trade.order_id)
+  trades= (trade for trade in [pos.exit, pos.entry] when trade && !trade.closed && trade.current_order)
   cancelations_left = trades.length 
 
   for trade in trades
-    poloniex.query_trading_api
-      command: 'cancelOrder'
-      orderNumber: trade.order_id
-    , do (trade) -> (err, resp, body) ->
-
+    exchange.cancel_order
+      order_id: trade.current_order
+    , (result) -> 
       cancelations_left--
 
-      if body?.error == 'Invalid order number, or you are not the person who placed the order.'
-        # this happens if the trade got canceled outside the system or on a previous run that failed
-        delete body.error 
-
-      if !body || body.error
+      if result.error
         console.log "GOT ERROR CANCELING POSITION", {pos, cancelations_left, err, resp, body}
       else
         console.log 'CANCELED POSITION'
-        delete trade.order_id
-        save pos
+        delete trade.current_order
+        bus.save pos if pos.key
 
       if cancelations_left == 0
         callback()
-        save pos if pos.key
-
+        bus.save pos if pos.key
 
 
 
 update_account_balances = (callback) ->
-  poloniex.query_trading_api
-    command: 'returnCompleteBalances'
-  , (err, response, body) ->
+  sheet = from_cache 'balances'
+  initialized = sheet.balances?
+  dealers = get_dealers()
 
-    sheet = fetch '/balances'
-    sheet.balances ||= {}
-    sheet.on_order ||= {}
+  exchange.get_your_balance {}, (result) -> 
+    x_sheet = 
+      balances: {}
+      on_order: {}
 
-    for currency, balance of body
-      if currency in config.market.split('_')
-        sheet.balances[currency] = parseFloat balance.available
-        sheet.on_order[currency] = parseFloat balance.onOrders
+    for currency, balance of result
+      if currency == config.c1
+        x_sheet.balances.c1 = parseFloat balance.available
+        x_sheet.on_order.c1 = parseFloat balance.onOrders
+      else if currency == config.c2 
+        x_sheet.balances.c2 = parseFloat balance.available
+        x_sheet.on_order.c2 = parseFloat balance.onOrders
 
-    save sheet
+    if !initialized
+      c1_budget = config.c1_budget or x_sheet.balances.c1
+      c2_budget = config.c2_budget or x_sheet.balances.c2
 
-    if callback
-      callback()
+      sheet.balances = 
+        c1: c1_budget
+        c2: c2_budget
+      sheet.deposits = 
+        c1: c1_budget
+        c2: c2_budget        
+      sheet.on_order = 
+        c1: 0 
+        c2: 0 
 
-update_deposit_history = (callback) ->
-  poloniex.query_trading_api
-    command: 'returnDepositsWithdrawals'
-    start: 0
-    end: now()
-  , (err, response, body) ->
+      # initialize, assuming equal distribution of available balance
+      # between dealers 
+      num_dealers = dealers.length 
+      for dealer in dealers
+        sheet[dealer] = 
+          deposits: 
+            c1: c1_budget / num_dealers 
+            c2: c2_budget / num_dealers 
+          balances: 
+            c1: c1_budget / num_dealers 
+            c2: c2_budget / num_dealers 
+          on_order:
+            c1: 0 
+            c2: 0 
 
-    if body.error
-      throw "COULD NOT UPDATE DEPOSIT HISTORY: #{body.error}"
+    btc = eth = btc_on_order = eth_on_order = 0
 
-    sheet = fetch '/balances'
-    sheet.deposits = {}
-    sheet.withdrawals = {}
+    for dealer in dealers
+      console.assert sheet[dealer], 
+        message: 'dealer has no balance'
+        dealer: dealer 
+        balance: sheet
 
-    for deposit in (body.deposits or [])
-      sheet.deposits[deposit.currency] ||= 0
-      sheet.deposits[deposit.currency] += parseFloat(deposit.amount)
+      positions = from_cache(dealer).positions
 
-    for withdrawal in (body.withdrawals or [])
-      sheet.withdrawals[withdrawal.currency] ||= 0
-      sheet.withdrawals[withdrawal.currency] += parseFloat(withdrawal.amount)
+      dbtc = deth = dbtc_on_order = deth_on_order = 0
 
-    save sheet
+      for pos in positions
 
-    if callback
-      callback()
+        if pos.entry.type == 'buy' 
+          buy = pos.entry 
+          sell = pos.exit
+        else 
+          buy = pos.exit
+          sell = pos.entry
+
+        
+        if buy
+          # used or reserved for buying trade.amount eth
+          btc_for_purchase = buy.amount * buy.rate
+          dbtc -= btc_for_purchase
+          dbtc_on_order += btc_for_purchase
+
+          if buy.fills?.length > 0
+            for fill in buy.fills
+              deth += fill.amount 
+              deth -= fill.fee
+              dbtc_on_order -= fill.total
+
+        if sell 
+          eth_for_purchase = sell.amount
+          deth -= eth_for_purchase
+          deth_on_order += eth_for_purchase
+
+          if sell.fills?.length > 0 
+            for fill in sell.fills 
+              dbtc += fill.total 
+              dbtc -= fill.fee
+              deth_on_order -= fill.amount
+      
+      btc += dbtc 
+      eth += deth 
+      btc_on_order += dbtc_on_order
+      eth_on_order += deth_on_order
+
+      dbalance = sheet[dealer]
+      dbalance.balances.c1 = dbalance.deposits.c1 + dbtc
+      dbalance.balances.c2 = dbalance.deposits.c2 + deth
+      dbalance.on_order.c1 = dbtc_on_order
+      dbalance.on_order.c2 = deth_on_order
+
+      console.assert dbalance.balances.c1 >= 0 && dbalance.balances.c2 >= 0, 
+        message: 'negative balance!?!'
+        dealer: dealer
+        balance: sheet.balances
+        dbalance: sheet[dealer]
+        positions: positions
+        dealer: from_cache(dealer).positions
+
+    sheet.balances.c1 = sheet.deposits.c1 + btc
+    sheet.balances.c2 = sheet.deposits.c2 + eth
+    sheet.on_order.c1 = btc_on_order
+    sheet.on_order.c2 = eth_on_order
 
 
-update_fee_schedule = (callback) -> 
-  poloniex.query_trading_api
-    command: 'returnFeeInfo'
-  , (err, response, body) ->
-    balance = fetch '/balances'
-    balance.exchange_fee = (parseFloat(body.makerFee) + parseFloat(body.takerFee)) / 2
-    fee_schedule = fetch '/fee_schedule'
-    extend fee_schedule, body 
-    save balance
-    save fee_schedule
+    console.assert sheet.on_order.c1 == btc_on_order && sheet.on_order.c2 == eth_on_order, 
+      message: "Order amounts differ"
+      c1_on_order: btc_on_order
+      c2_on_order: eth_on_order
+      on_order: sheet.on_order
+
+    console.assert sheet.deposits.c1 + btc <= x_sheet.balances.c1 && sheet.deposits.c2 + eth <= x_sheet.balances.c2,
+      message: "Dealers have more balance than available"
+      c1: sheet.deposits.c1 + btc
+      c2: sheet.deposits.c2 + eth
+      exchange_balances: x_sheet.balances
+
+
+    bus.save sheet
+
+    callback?()
+
+
+
+# update_deposit_history = (callback) ->
+#   exchange.get_your_deposit_history
+#     start: 0
+#     end: now()
+#   , (result) -> 
+
+#     console.assert !result.error, 
+#       message: "COULD NOT UPDATE DEPOSIT HISTORY"
+#       error: result.error 
+#       response: result.response
+#       error_message: result.message
+
+#     sheet = from_cache 'balances'
+#     sheet.deposits = {}
+#     sheet.withdrawals = {}
+
+#     for deposit in (result.deposits or [])
+#       currency = deposit.currency
+#       if currency == config.c1 
+#         sheet.deposits.c1 ||= 0
+#         sheet.deposits.c1 += parseFloat(deposit.amount)
+#       else if currency == config.c2
+#         sheet.deposits.c2 ||= 0
+#         sheet.deposits.c2 += parseFloat(deposit.amount)
+
+#     for withdrawal in (result.withdrawals or [])
+#       currency = withdrawal.currency
+#       if currency == config.c1 
+#         sheet.withdrawals.c1 ||= 0
+#         sheet.withdrawals.c1 += parseFloat(withdrawal.amount)
+#       else if currency == config.c2
+#         sheet.withdrawals.c2 ||= 0
+#         sheet.withdrawals.c2 += parseFloat(withdrawal.amount)
+
+#     bus.save sheet
+
+#     if callback
+#       callback()
+
+
+update_fee_schedule = (callback) ->
+  exchange.get_your_exchange_fee {}, (result) -> 
+    console.assert !result.error, 
+      error: result.error
+
+    balance = from_cache 'balances'
+    balance.exchange_fee = (parseFloat(result.makerFee) + parseFloat(result.takerFee)) / 2
+    fee_schedule = from_cache 'fee_schedule'
+    extend fee_schedule, result 
+    bus.save balance
+    bus.save fee_schedule
     callback()
+
+
+
+
+
+operation = module.exports =
+  
+
+  start: (conf) ->
+    global.config = defaults config, conf, 
+      key: 'config'
+      exchange: 'poloniex'
+      simulation: false
+      tick_interval: 60
+      c1: 'BTC'
+      c2: 'ETH'
+      accounting_currency: 'USDT'
+      checks_per_frame: 2
+      enforce_balance: true
+
+    bus.save config 
+
+
+    time = from_cache 'time'
+
+
+    console.log 'STARTING METH'
+
+    pusher.init {history, take_position, cancel_unfilled, update_exit}
+
+    console.log "...updating deposit history"
+
+    # update_deposit_history ->
+    update_fee_schedule -> 
+      history_width = history.longest_requested_history
+
+      console.log "...loading past #{(history_width / 60 / 60 / 24).toFixed(2)} days of trade history"
+
+      tick.started = ts = now()
+      tick.history_to_keep = history_width
+
+      history.load_price_data (time.earliest or ts) - history_width, ts, ->
+
+        history.load ts - history_width, ts, ->
+
+          console.log "...connecting to #{config.exchange} live updates"
+          
+          history.subscribe_to_trade_history ->
+
+            console.log "...updating account balances"
+
+            update_account_balances ->
     
+              update_position_status ->
+
+                console.log "...hustling!"
+
+                one_tick()
+                setInterval one_tick, config.tick_interval * 1000
+
+  setup: ({port, db_name, clear_old}) -> 
+    global.pointerify = true
+    global.upload_dir = 'static/'
+
+    global.bus = require('statebus').serve 
+      port: port
+      file_store: false
+      client: false
+
+    bus.honk = false
+
+    if clear_old && fs.existsSync(db_name)
+      fs.unlinkSync(db_name) 
+
+    bus.sqlite_store
+      filename: db_name
+      use_transactions: true
+
+    global.save = bus.save 
+    global.fetch = (key) ->
+      bus.fetch deslash key 
+
+    global.del = bus.del 
+
+    save key: 'operation'
+
+
+    require 'coffee-script'
+    require './shared'
+    express = require('express')
+
+
+    bus.http.use('/node_modules', express.static('node_modules'))
+    bus.http.use('/meth/vendor', express.static('meth/vendor'))
+
+
+    # taken from statebus server.js. Just wanted different client path.
+    bus.http_serve '/meth/:filename', (filename) -> 
+      filename = deslash filename
+
+      source = bus.read_file(filename)
+
+      if filename.match(/\.coffee$/)
+
+        try
+          compiled = require('coffee-script').compile source, 
+                                                        filename: filename
+                                                        bare: true
+                                                        sourceMap: true
+        
+        catch e
+          console.error('Could not compile ' + filename + ': ', e)
+          return ''
+
+
+        compiled = require('coffee-script').compile(source, {filename: filename, bare: true, sourceMap: true})
+        source_map = JSON.parse(compiled.v3SourceMap)
+        source_map.sourcesContent = source
+        compiled = 'window.dom = window.dom || {}\n' + compiled.js
+        compiled = 'window.ui = window.ui || {}\n' + compiled
+
+        btoa = (s) -> return new Buffer(s.toString(),'binary').toString('base64')
+
+        # Base64 encode it
+        compiled += '\n'
+        compiled += '//# sourceMappingURL=data:application/json;base64,'
+        compiled += btoa(JSON.stringify(source_map)) + '\n'
+        compiled += '//# sourceURL=' + filename
+        return compiled
+
+      else return source
+
+
+    bus.http.get '/*', (r,res) => 
+
+      paths = r.url.split('/')
+      paths.shift() if paths[0] == ''
+
+      prefix = ''
+      server = "statei://localhost:#{port}"
+
+      html = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <script type="coffeedom">
+        bus.honk = false
+          
+        #</script>
+        <script src="#{prefix}/node_modules/statebus/client.js" server="#{server}"></script>
+        <script src="#{prefix}/meth/vendor/d3.js"></script>
+        <script src="#{prefix}/meth/vendor/md5.js"></script>
+        <script src="#{prefix}/meth/vendor/plotly.js"></script>
+
+
+        <script src="#{prefix}/meth/shared.coffee"></script>
+        <script src="#{prefix}/meth/crunch.coffee"></script>
+        <script src="#{prefix}/meth/dash.coffee"></script>
+
+        <link rel="stylesheet" href="#{prefix}/meth/vendor/fonts/Bebas Neue/bebas.css" type="text/css"/>
+        
+        </head>
+        <body>
+        </body>
+        </html>
+          """
+
+      res.send(html)
 
 

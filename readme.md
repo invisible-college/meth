@@ -3,20 +3,31 @@ The METH Cryptocurrency Trading Engine
 
 METH is for automated trading of cryptocurrencies. It provides a framework for anyone to define their own trading strategies, backtest them, and ultimately execute them on an exchange (currently just Poloniex). 
 
-It is a ton of work to define your own trading strategies. METH isn't something that you can just get started and expect to be profitable quickly. 
+It is a ton of work to discover your own profitable trading strategies. METH isn't something that you can just get started and expect to be profitable quickly. 
 
-About the name: 
+And the framework itself follows few coding conventions and has few safety rails. If I hadn't wrote it and understand it intimitely, I certainly wouldn't run it myself! In fact, I am still deciding whether to run it. 
+
+So: USE AT YOUR OWN RISK
+
+
+About the name
 ------------------------------------------------------------
 
-The name originally occurred to me because I have been listening to RatBOT's "Faces of Meth" (https://soundcloud.com/ratbot/sets/faces-of-meth), a track that has been oddly compelling to me. 
+The name originally occurred to me because I have been listening to RatBOT's "Faces of Meth" (https://soundcloud.com/ratbot/sets/faces-of-meth), a track that has been oddly compelling to me, while creating a trading bot. 
 
-But then the multiple meanings of calling the engine METH struck me: I started working on METH because I wanted to create an investment vehicle that would Maximize my ETHereum. And perhaps unsurprisingly, it turned out to be addictive, leading me down a path of self-reflection and concern about neglecting Considerit. 
+But then the multiple meanings of calling the engine METH struck me: I started working on METH because I wanted to create an investment vehicle that would Maximize my ETHereum. And perhaps unsurprisingly, it turned out to be addictive.
 
-So, it is a cautionary name.
+This last meaning has been the most salient. It has come to be a cautionary name.
+
 
 Installation
 -------------------------
-If you want to get METH up and running, contact me at travis@invisible.college. I don't have much motivation to package METH up nicely, but if I see demand, I'll have more motivation. Note that even if it is packaged up nicely, it takes a lot of work on your part to define and test a good market strategy. This isn't a plug and play tool. 
+If you want to get METH up and running, contact me at travis@invisible.college. I don't have much motivation to package METH up nicely, but if I see demand, I'll have more motivation. Note that even if it is packaged up nicely, it takes a lot of work on your part to define and test a good market strategy. This isn't a plug and play tool, and there aren't much of any safety rails.
+
+
+Getting Started
+-------------------------
+A sample project is in the repo at `/example_project`. It has a number of example strategies, a server that will execute live trades, and a backtester.
 
 
 Overview: Running a METH operation
@@ -52,7 +63,7 @@ The pusher periodically checks the market for new opportunities (I check every m
 - Executes each opportunity when there is enough money in your budget
 - Does accounting; e.g. identifying when a trade has been successful, updating your budget.
 
-Furthermore, your strategies can define non-market based policies that regulate their behavior. The pusher enforces these policies. Supported policies include: 
+Furthermore, your strategies can set non-market based policies that regulate their behavior. The pusher enforces these policies. Supported policies include: 
 - Maximum open positions: The number of uncompleted positions that a strategy can have at any time. 
 - Minimum return: Don't create new positions where the expected return is too small. 
 - Cooloff period: Don't create a new position if the strategy has uncompleted positions that were created not too long ago. 
@@ -64,7 +75,6 @@ You gotta keep track of your assets. Learn how your operation is performing. Gai
 
 METH provides a dashboard to visualize what is happening with your operation. The dashboard includes:
   - Your budget (deposits / withdrawals / balances)
-  - Ticker from the exchange
   - Time series of all your trades, with ability to zoom in on particular time period and/or filter to particular strategies. 
   - Ability to drill into performance of individual strategies, using a variety of performance indicators
   - A raw activity feed that helps you track the details of what is happening

@@ -1,0 +1,16 @@
+{
+  "name": "meth",
+  "version": "1.0.0",
+  "description": "Algorithmic trading for cryptocurrencies.",
+  "author": "Travis Kriplean",
+  "repository": "https://github.com/invisible-college/meth",
+  "license": "MIT",
+  "dependencies": {
+    "statebus": ">=5",
+    "coffee-script": "^1.11.1",
+    "express": "^4.15.3",
+    "progress": "latest",
+    "mathjs": "latest",
+    "heapdump": "latest"
+  }
+}

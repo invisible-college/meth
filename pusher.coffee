@@ -1,213 +1,322 @@
-feature_engine = require( './features')
-
 require './shared'
 
-dealers = {}
-feature_engines = {}
+feature_engine = require( './features')
+
+global.dealers = {}
+global.feature_engines = {}
 
 global.open_positions = {}
-global.all_positions = {}
+global.slow_start_settings = {}
 
 
-dealer_defaults = 
-  cooloff_period: 4 * 60
-  max_open_positions: 1
+learn_strategy = (name, teacher, strat_dealers) -> 
 
+  console.assert uniq(strat_dealers), {message: 'dealers aren\'t unique!', dealers: strat_dealers}
 
-
-register_strategy = (name, func, ensemble, budget) -> 
-  console.log "Registered strategy #{name}"
-
-  if name[0] != '/'
-    name = "/#{name}"
-
-  operation = fetch '/operation'
-  if !(name in operation)
-    operation[name] =       
-      key: name
-      budget: budget
-      dealers: []
-  else 
-    operation[name].budget = budget 
+  operation = from_cache 'operation'
+  #if !(name of operation)
+  operation[name] =       
+    key: name
+    dealers: []
 
   save operation
 
-  for dealer_config in ensemble
+  strategy = operation[name]
 
-    dealer_name = get_name name, dealer_config
+  needs_save = false 
 
-    dealer_config = extend 
-      frame_width: 5 * 60
-      min_return: .2
-    , dealer_config
+  # name dealer names more space efficiently :)
+  names = {}
+  params = {}
+  for dealer_conf,idx in strat_dealers
+    for k,v of dealer_conf 
+      params[k] ||= {}
+      params[k][v] = 1
 
-    dealer = func dealer_config
+  differentiating_params = {}
+  for k,v of params 
+    if Object.keys(v).length > 1 
+      differentiating_params[k] = 1 
+  ###### 
 
-    register_dealer dealer_name, dealer, dealer_config, operation[name], budget / ensemble.length / 2
+  for dealer_conf,idx in strat_dealers
+
+    dealer_conf = defaults dealer_conf,
+      frame_width: 5
+      max_open_positions: 9999999
+    
+    dealer_conf.frame_width *= 60
+
+    if dealer_conf.max_open_positions > 1 && !dealer_conf.cooloff_period?
+      dealer_conf.cooloff_period = 4 * 60
+
+    dealer = teacher dealer_conf
+
+    name = get_name strategy.key, dealer_conf, differentiating_params  
+    if name == strategy.key 
+      name = "#{strategy.key}-dealer"
+    key = name 
 
 
+    dealer_data = fetch key 
+
+    if !dealer_data.positions # initialize
+      dealer_data = extend dealer_data,
+        parent: '/' + strategy.key 
+        positions: []
+        frames: dealer.frames
+        max_t2: dealer.max_t2
+
+    dealer_data.settings = dealer_conf
+
+    console.assert dealer_data.settings.series || dealer.evaluate_open_position?, 
+      message: 'Dealer has no evaluate_open_position method defined'
+      dealer: name 
+
+    dealers[key] = dealer 
+
+    if dealer_conf.penalize_losses? &&  dealer_conf.penalize_losses > -1
+      slow_start_settings[key] = 1
+
+    if ('/' + key) not in strategy.dealers
+      strategy.dealers.push '/' + key
+      needs_save = true 
+
+    save dealer_data
 
 
-register_dealer = (name, dealer, dealer_config, strategy, budget) -> 
-  #console.log "\tRegistered dealer #{name}"
- 
-  if name[0] != '/'
-    name = "/#{name}"
-
-  dealers[name] = dealer
-
-
-  dealer_data = fetch(name)
-  if !dealer_data.positions # initialize
-    dealer_data = extend dealer_data,
-      parent: strategy.key 
-      budget: budget 
-      positions: []
-
-  dealer_data.settings = dealer_config
-
-  save dealer_data
-  
-  if !(dealer_data.key in strategy.dealers)
-    strategy.dealers.push dealer_data.key 
+  if needs_save
     save strategy
 
 
-  # create a feature engine that will generate features with trades quantized
-  # by frame_width seconds
-  frame_width = dealer_data.settings.frame_width
-  if !feature_engines[frame_width]
-    feature_engines[frame_width] = feature_engine.create frame_width
-
-  feature_engines[frame_width].num_frames = Math.max dealer.frames, \
-                                                (feature_engines[frame_width].num_frames or 0)
-
-  feature_engines[frame_width].max_t2 = Math.max dealer.max_t2, \
-                                                (feature_engines[frame_width].max_t2 or 0)
-
-  dealer.feature_engine = feature_engines[frame_width]
 
 
-init = (history, clear_positions) -> 
 
+unregister_strategies = -> 
+  global.dealers = {}
+  feature_engines = {}
+
+
+
+init = ({history, clear_all_positions, take_position, cancel_unfilled, update_exit}) -> 
   for name in get_dealers() 
-    dealer_data = fetch name 
-    dealer_data.active = !!dealers[name]
+    dealer_data = from_cache name
     save dealer_data
 
-  reset_open_and_all_positions clear_positions
+  reset_open()
+  clear_positions() if clear_all_positions
 
-  history.set_longest_requested_history(dealers)
+  history.set_longest_requested_history()
 
-reset_open_and_all_positions = (clear_positions) -> 
+  for k,v of feature_engines
+    v.reset()
+
+  for name in get_all_actors() 
+    dealer_data = from_cache name
+    has_open_positions = open_positions[name]?.length > 0
+
+    # create a feature engine that will generate features with trades quantized
+    # by frame_width seconds
+    frame_width = dealer_data.settings.frame_width
+    if !feature_engines[frame_width]
+      feature_engines[frame_width] = feature_engine.create frame_width
+
+    engine = feature_engines[frame_width]
+    engine.num_frames = Math.max dealer_data.frames, (engine.num_frames or 0)
+    engine.max_t2 = Math.max (dealer_data.max_t2 or 0), (engine.max_t2 or 0)
+    engine.checks_per_frame = Math.max (dealer_data.settings?.checks_per_frame or 0), (engine.checks_per_frame or config.checks_per_frame)
+
+    dealers[name]?.feature_engine = engine
+
+  pusher.take_position = take_position if take_position
+  pusher.cancel_unfilled = cancel_unfilled if cancel_unfilled
+  pusher.update_exit = update_exit if update_exit
+
+
+
+clear_positions = -> 
+  for name in get_all_actors() 
+    dealer = fetch(name)
+    dealer.positions = []
+    save dealer 
+
+
+reset_open = -> 
   global.open_positions = {}
-  global.all_positions = {}
   for name in get_dealers()
-    if clear_positions 
-      positions = fetch(name)
-      positions.positions = []
-      save positions 
-      
-    all_positions[name] = fetch(name).positions
-    open_positions[name] = (p for p in (all_positions[name] or []) when !p.closed)
+    dealer = fetch(name)
+    open_positions[name] = (p for p in (dealer.positions or []) when !p.closed)
 
 
-find_opportunities = (trade_history, exchange_fee) -> 
-  return [[],[]] if trade_history.length == 0 
 
-  if !tick?.time?
-    throw "tick.time is not defined!"
+
+find_opportunities = (trade_history, exchange_fee, balance) -> 
+  if trade_history.length == 0 
+    return [] 
+
+  console.assert tick?.time?,
+    message: "tick.time is not defined!"
+    tick: tick
 
   # prepare all features
+  # note that only some dealers need to be updated, depending on frame width
 
   yyy = Date.now()
   for name, engine of feature_engines
-    engine.tick trade_history
+    last_updated = engine.now
+    if (!last_updated || tick.time - last_updated >= engine.frame_width / (engine.checks_per_frame or config.checks_per_frame)) 
+      engine.tick trade_history
   t_.feature_tick += Date.now() - yyy if t_?
 
-  # evaluate prospective positions from all strategies
+  if !find_opportunities.dealers_by_frame_width
+    actors = get_all_actors()
+    actors_by_fw = {}
+    for actor in actors 
+      fw = from_cache(actor).settings.frame_width
+      actors_by_fw[fw] ||= []
+      actors_by_fw[fw].push actor 
+
+    find_opportunities.actors_by_frame_width = actors_by_fw
+
+
+  # identify new positions and changes to old positions (opportunities)
   opportunities = []
 
-  for name, dealer of dealers
-    dealer_data = fetch(name)
-    active = dealer_data.active 
-    has_open_positions = open_positions[name]?.length > 0 
-    continue if !active && !has_open_positions
+  for frame_width, actors of find_opportunities.actors_by_frame_width
+    features = feature_engines[frame_width]
+    if features.now != tick.time || !features.trades_loaded
+      continue
 
-    settings = dealer_data.settings
+    for name in actors
+      dealer_data = from_cache(name)
+      settings = dealer_data.settings
+      
+      if name of slow_start_settings
+        slow_start_settings[name] += settings.penalize_losses / config.checks_per_frame
+        slow_start_settings[name] = Math.min 1, slow_start_settings[name]
 
-    features = feature_engines[settings.frame_width]
+      zzz = Date.now()
 
-    yyy = Date.now()
+      # A strategy can't have too many positions on the books at once...
+      if settings.series || settings.never_exits || open_positions[name].length < settings.max_open_positions
 
-    # A strategy can't have too many positions on the books at once...
-    if settings.series || (active && open_positions[name].length < (settings.max_open_positions or dealer_defaults.max_open_positions))
+        dealer = dealers[name]
 
-      spec = dealer.evaluate_new_position features
-      t_.eval_pos += Date.now() - yyy if t_?
+        yyy = Date.now()
+        spec = dealer.evaluate_new_position 
+          dealer: name
+          features: features
+          open_positions: open_positions[name]
+          balance: balance
+        t_.eval_pos += Date.now() - yyy if t_?
 
-      yyy = Date.now()
-      position = create_position spec, name, exchange_fee
-      t_.create_pos += Date.now() - yyy if t_?
+        #yyy = Date.now()
+        if spec 
+          position = create_position spec, name, exchange_fee
+          #t_.create_pos += Date.now() - yyy if t_?
+
+          yyy = Date.now()      
+          valid = position && is_valid_position(position, balance[position.dealer])
+          found_match = false 
+
+          if valid
+            
+
+            # if false && !position.series_data && settings.never_exits
+            #   for pos, idx in open_positions[name] when !pos.exit 
+            #     if pos.entry.amount == position.entry.amount && pos.entry.type != position.entry.type
+
+            #       opportunities.push
+            #         pos: pos
+            #         action: 'exit'
+            #         rate: position.entry.rate
+            #         required_c2: if pos.entry.type == 'buy' then pos.entry.amount
+            #         required_c1: if pos.entry.type == 'sell' then pos.entry.amount * position.entry.rate
+
+            #       # open_positions[name].splice idx, 1  
+            #       found_match = true 
+            #       break
+
+            # if settings.merge_positions && !position.series_data
+            #   for pos, idx in open_positions[name] when pos.exit && pos.entry.closed && !pos.exit.closed && \
+            #                                             pos.entry.type != position.entry.type && \
+            #                                             (settings.merge_positions == 'casual' || \ 
+            #                                              Math.abs(pos.entry.rate - pos.exit.rate) >= Math.abs(pos.entry.rate - position.entry.rate))
+
+            #     new_exit = position.entry
+            #     opportunities.push
+            #       pos: pos
+            #       action: 'update_exit'
+            #       rate: new_exit.rate
+            #       required_c1: if new_exit.type == 'buy' then pos.exit.amount * (new_exit.rate - pos.exit.rate)
+
+            #     found_match = pos
+
+            #     break
 
 
+            if !found_match
+              sell = if position.entry.type == 'sell' then position.entry else position.exit
+              buy  = if position.entry.type == 'buy'  then position.entry else position.exit
+
+              opportunities.push 
+                pos: position
+                action: 'create'
+                required_c2: if sell then sell.amount
+                required_c1: if  buy then buy.amount * buy.rate
+
+      t_.handle_new += Date.now() - zzz if t_?
+
+      continue if dealer_data.settings.series
+
+      # see if any open positions want to exit
       yyy = Date.now()      
-      if position?.series_data || is_valid_position position
-        found_match = false 
-        if !position.series_data && settings.never_exits
-          for pos, idx in open_positions[name] when !pos.exit 
-            if pos.entry.amount == position.entry.amount && pos.entry.type != position.entry.type
 
-              opportunities.push
-                pos: pos
-                action: 'exit'
-                rate: position.entry.rate
-                required:
-                  ETH: if pos.entry.type == 'sell' then 0 else pos.entry.amount
-                  BTC: if pos.entry.type == 'buy' then 0 else position.entry.amount * position.entry.rate
-
-              # open_positions[name].splice idx, 1  
-              found_match = true 
-              break
-
-        if !found_match
-
-          sell = if position.entry.type == 'sell' then position.entry else position.exit
-          buy = if position.entry.type == 'buy' then position.entry else position.exit
-
-          opportunities.push 
-            pos: position
-            action: 'create'
-            required: 
-              ETH: if sell then sell.amount 
-              BTC: if  buy then buy.amount * buy.rate
-
-    t_.handle_new += Date.now() - yyy if t_?
-
-    yyy = Date.now()      
-    # see if any open positions want to exit
-    if dealer.evaluate_open_position
-      for pos in open_positions[name] when !pos.series_data
-
-        opportunity = dealer.evaluate_open_position pos, features
+      eval_open = global.dealers[name].evaluate_open_position
+      for pos in open_positions[name] when !pos.series_data && found_match != pos
+        opportunity = eval_open
+          position: pos 
+          dealer: name
+          features: features
+          open_positions: open_positions[name]
+          balance: balance 
 
         if opportunity
           if opportunity.action == 'exit'
-            #console.log "EXITING", pos, opportunity.rate if pos.strategy == 'tug&frame=2.25&ret=0.525&backoff=0.475'
+            if pos.entry.type == 'buy'
+              opportunity.required_c2 = pos.entry.amount
+            else 
+              opportunity.required_c1 = pos.entry.amount * opportunity.rate
+            
+          else if opportunity.action == 'update_exit'
+            exit = if pos.entry?.closed then pos.exit else pos.entry 
 
-            extend opportunity,
-              required:
-                ETH: if pos.entry.type == 'sell' then 0 else pos.entry.amount
-                BTC: if pos.entry.type == 'buy' then 0 else pos.entry.amount * opportunity.rate
+            if exit.type == 'buy'
+              opportunity.required_c1 = exit.to_fill * (opportunity.rate - exit.rate)
+            # no additional amount needed if sell, we'll just get less in return
 
-          opportunities.push extend opportunity, {pos: pos}
+          opportunity.pos = pos 
+          opportunities.push opportunity
 
-    t_.handle_open += Date.now() - yyy if t_?
-  
+      t_.handle_open += Date.now() - yyy if t_?
+
+
+  if !uniq(opportunities)
+    msg = 
+      message: 'Duplicate opportunities'
+      opportunities: opportunities
+    
+    for opp,idx in opportunities
+      msg["pos-#{idx}"] = opp.pos 
+
+    console.assert false, msg
+
   opportunities
 
 
-execute_opportunities = (opportunities, exchange_fee) -> 
+
+
+execute_opportunities = (opportunities, exchange_fee, balance) -> 
   return if !opportunities || opportunities.length == 0 
 
   for opportunity in opportunities
@@ -217,29 +326,60 @@ execute_opportunities = (opportunities, exchange_fee) ->
       when 'create'
         take_position pos
 
+      when 'cancel_unfilled'
+        cancel_unfilled pos
+
       when 'exit'
         exit_position pos, opportunity.rate, exchange_fee
         take_position pos
 
-      when 'cancel_unfilled'
-        cancel_unfilled pos
+      when 'update_exit'
+        update_exit pos, opportunity.rate, exchange_fee
 
 
-check_wallet = (opportunities, balances) -> 
-  balances ||= fetch('/balances').balances
 
-  required_BTC = required_ETH = 0 
+check_wallet = (opportunities, balance) -> 
 
-  for opportunity in opportunities when !opportunity.pos.series_data && opportunity.required
-    required_BTC += opportunity.required.BTC 
-    required_ETH += opportunity.required.ETH
+  doable = []
 
-  need_ETH = required_ETH > balances.ETH
-  need_BTC = required_BTC > balances.BTC
+  required_c1 = required_c2 = 0 
 
-  sufficient = !(need_ETH || need_BTC)
+  by_dealer = {}
+  ops_cnt = 0 
+  for opportunity in opportunities
+    if (!opportunity.required_c2 && !opportunity.required_c1) || opportunity.pos.series_data
+      doable.push opportunity
+      continue 
 
-  sufficient
+    by_dealer[opportunity.pos.dealer] ||= []
+    by_dealer[opportunity.pos.dealer].push opportunity
+    ops_cnt += 1
+
+  return doable if ops_cnt == 0 
+
+
+  all_avail_BTC = balance.balances.c1
+  all_avail_ETH = balance.balances.c2
+
+  for name, ops of by_dealer
+    dbalance = balance[name].balances
+    avail_BTC = dbalance.c1
+    avail_ETH = dbalance.c2
+
+    console.assert avail_BTC >= 0 && avail_ETH >= 0, {message: 'negative balance', dealer: name}
+    for op in ops 
+      r_ETH = op.required_c2 or 0
+      r_BTC = op.required_c1 or 0
+      if avail_ETH >= r_ETH && avail_BTC >= r_BTC && all_avail_ETH >= r_ETH && all_avail_BTC >= r_BTC
+        doable.push op
+
+        avail_ETH -= r_ETH
+        avail_BTC -= r_BTC
+        all_avail_ETH -= r_ETH
+        all_avail_BTC -= r_BTC
+
+
+  doable
 
 
 create_position = (spec, dealer, exchange_fee) -> 
@@ -248,9 +388,9 @@ create_position = (spec, dealer, exchange_fee) ->
   buy = spec.buy 
   sell = spec.sell
 
-  delete spec.buy; delete spec.sell
+  spec.buy = undefined; spec.sell = undefined
 
-  simultaneous = buy && sell
+  simultaneous = buy && sell 
 
   if !buy?.entry && !sell?.entry 
     if simultaneous || buy 
@@ -260,83 +400,130 @@ create_position = (spec, dealer, exchange_fee) ->
 
   if buy
     buy.type = 'buy'
+    buy.to_fill ||= buy.amount
+
   if sell 
     sell.type = 'sell'
+    sell.to_fill ||= sell.amount
 
-  amount = fetch(dealer).budget
-
-  key = "/position/#{dealer}-#{tick.time}"
   position = extend {}, spec,
-    key: key
+    key: "position/#{dealer}-#{tick.time}" if !config.simulation
     dealer: dealer
     created: tick.time
 
-    entry: extend((if buy?.entry then buy else sell), 
-          amount: amount)
-
-    exit: if simultaneous then extend((if sell.entry then buy else sell), 
-          amount: amount)
+    entry: if buy?.entry then buy else sell
+    exit: if simultaneous then (if sell.entry then buy else sell)
 
   # predict returns if we place both at once
   if simultaneous
-    set_expected_returns position, exchange_fee
+    set_expected_profit position, exchange_fee
 
   position
 
-exit_position = (pos, rate, exchange_fee) -> 
+exit_position = (pos, rate, exchange_fee) ->
+  console.assert pos.entry, {message: 'position can\'t be exited because entry is undefined', pos: pos, rate: rate} 
   type = if pos.entry.type == 'buy' then 'sell' else 'buy'
-
-  if isNaN(rate)
-    console.log 'NAN!!', pos
-  
 
   pos.exit = 
     amount: pos.entry.amount
     type: type
     rate: rate 
 
-  set_expected_returns pos, exchange_fee
+  set_expected_profit pos, exchange_fee
   pos
-
-
 
 
 # Executes the position entry and exit, if they exist and it hasn't already been done. 
 take_position = (pos) -> 
-  if config.take_position
-    config.take_position pos, (error) -> 
+
+  if pusher.take_position && !pos.series_data
+    pusher.take_position pos, (error) -> 
       took_position pos, error
   else 
     took_position pos
 
 took_position = (pos, error) ->   
 
-  if error 
-    for trade in ['entry', 'exit'] 
-      if pos[trade] && !pos[trade].created && !pos[trade].order_id
-        delete pos[trade]
-        delete pos.expected_profit if pos.expected_profit
-        delete pos.expected_return if pos.expected_return    
+  if error && !config.simulation
+    for trade in ['entry', 'exit'] when pos[trade]
+
+      if !pos[trade].current_order
+        pos.expected_profit = undefined if pos.expected_profit
+        if !(pos[trade].orders?.length > 0)
+          pos[trade] = undefined 
+        else
+          console.error  
+            message: "We've partially filled a trade, but an update order occurred. I think Pusher will handle this properly though :p"
+            pos: pos 
+          pos[trade].created = pos.created # faster recovery
 
     if !trade.exit && !trade.entry
-      delete pos.key
-      return
+      return destroy_position pos 
+    else 
+      save pos
 
   for trade in [pos.entry, pos.exit] when trade && !trade.created
     trade.created = tick.time
+    trade.fills = []
 
-  if !all_positions[pos.dealer]
+  if !from_cache(pos.dealer).positions
     throw "#{pos.dealer} not properly initialized with positions"
 
-  if all_positions[pos.dealer].indexOf(pos) == -1
-    all_positions[pos.dealer].push pos
+  if from_cache(pos.dealer).positions.indexOf(pos) == -1
+    from_cache(pos.dealer).positions.push pos
     if !pos.series_data
       open_positions[pos.dealer].push pos
 
 
+update_exit = (pos, rate, exchange_fee) ->
+
+  # pay attention to case where both entry and exit are stuck b/c of partial fills
+
+  if pos.exit.closed && !pos.entry.closed  
+    p = pos.exit 
+    pos.exit = pos.entry 
+    pos.entry = p 
+
+  if isNaN(rate) || !rate || rate == 0
+    console.assert false, 
+      message: 'Bad rate for moving exit!',
+      rate: rate 
+      pos: pos 
+
+  if !pos.entry 
+    console.assert false, 
+      message: 'position can\'t be exited because entry is undefined'
+      pos: pos
+      rate: rate
+
+  last_exit = pos.exit.rate 
+
+  console.log 'UPDATING EXIT', rate 
+  cb = (error) -> 
+    if !error 
+      pos.last_exit = last_exit 
+      if !pos.reset
+        pos.original_exit = last_exit
+        pos.reset = tick.time
+
+      pos.exit.created = tick.time
+      pos.exit.rate = rate
+      set_expected_profit pos, exchange_fee
+
+  if pusher.update_exit
+    pusher.update_exit 
+      pos: pos
+      trade: pos.exit
+      rate: rate 
+      amount: pos.exit.to_fill 
+    , cb
+  else 
+    cb()
+
+
 cancel_unfilled = (pos) ->
-  if config.cancel_unfilled 
-    config.cancel_unfilled pos, ->
+  if pusher.cancel_unfilled 
+    pusher.cancel_unfilled pos, ->
       canceled_unfilled pos
   else 
     canceled_unfilled pos
@@ -344,34 +531,34 @@ cancel_unfilled = (pos) ->
 
 # make all meta data updates after trades have potentially been canceled. 
 canceled_unfilled = (pos) ->
-
-  for trade in ['exit', 'entry']
-    if pos[trade] && !pos[trade].closed && !pos[trade].order_id
+  for trade in ['exit', 'entry'] when !pos[trade]?.closed
+    if pos[trade] && !pos[trade].current_order
       pos.last_exit = pos[trade].rate
-      # if isNaN(pos[trade].rate)
-      #   console.log pos
       pos.original_exit = pos[trade].rate if !pos.original_exit?
-      delete pos[trade]
-      delete pos.expected_profit if pos.expected_profit
-      delete pos.expected_return if pos.expected_return    
-      pos.reset = tick.time if !pos.reset 
+      pos.expected_profit = undefined if pos.expected_profit
+      pos.reset = tick.time if !pos.reset
+      if pos[trade].fills.length == 0 
+        pos[trade] = undefined
 
   if pos.exit && !pos.entry 
     pos.entry = pos.exit 
-    delete pos.exit
+    pos.exit = undefined
 
   else if !pos.entry && !pos.exit 
     destroy_position pos
 
 
 
-destroy_position = (pos) -> 
-  positions = all_positions[pos.dealer]
+destroy_position = (pos) ->
+  positions = from_cache(pos.dealer).positions
   open = open_positions[pos.dealer]
+
+  if !config.simulation
+    console.assert pos.key?, {message: 'trying to destroy a position without a key', pos: pos}
 
   idx = positions.indexOf(pos)
   if idx == -1
-    console.log "COULD NOT DESTROY position #{pos.key}...not found in positions"
+    console.log "COULD NOT DESTROY position #{pos.key}...not found in positions", pos
   else 
     positions.splice idx, 1 
 
@@ -381,31 +568,30 @@ destroy_position = (pos) ->
   else 
     open.splice idx, 1  
 
-  # del pos 
-  delete pos.key
+  if !config.simulation
+    pos.key = undefined
 
 
 
-set_expected_returns = (pos, exchange_fee) -> 
-  if pos.entry && pos.exit && pos.entry.rate > 0 && pos.exit.rate > 0 
+set_expected_profit = (pos, exchange_fee) -> 
+  exit = pos.exit
+  if pos.entry && exit && pos.entry.rate > 0 && exit.rate > 0 
 
     btc = eth = 0 
 
-    for trade in [pos.entry, pos.exit]
+    for trade in [pos.entry, exit]
       if trade.type == 'buy'
         eth += trade.amount 
-        eth -= (trade.fee or (trade.amount * exchange_fee))
+        eth -= trade.fee or trade.amount * exchange_fee
         btc -= (trade.total or trade.amount * trade.rate)
       else
         eth -= trade.amount 
         btc += (trade.total or trade.amount * trade.rate)
-        btc -= (trade.fee or (trade.amount * trade.rate * exchange_fee))
+        btc -= trade.fee or (trade.total or trade.amount * trade.rate) * exchange_fee
 
-    pos.expected_profit = eth + btc / pos.exit.rate
-    pos.expected_return = pos.expected_profit / pos.exit.amount
-    pos.expected_return *= 100
-
+    pos.expected_profit = eth + btc / exit.rate
   pos 
+
 
 
 ################
@@ -418,91 +604,100 @@ set_expected_returns = (pos, exchange_fee) ->
 # automatically applied if entry & exit specified immediately: 
 #     - profit threshold
 
-is_valid_position = (pos) ->  
+is_valid_position = (pos, balance) ->  
   return false if !pos
   return true if pos.series_data
 
   
   settings = get_settings(pos.dealer)
 
-  failure_reasons = []
+  # failure_reasons = []
+
+  entry = pos.entry 
+  exit = pos.exit
 
   # Non-zero rates
-  if pos.entry && pos.entry.rate == 0 || pos.exit && pos.exit.rate == 0 
+  if (entry && (entry.rate == 0 or isNaN(entry.rate))) || (exit && (exit.rate == 0 or isNaN(exit.rate)))
+    # console.log "Can't have a zero rate"
     return false 
     failure_reasons.push "Can't have a zero rate"
 
+  if entry.amount <= 0 || exit?.amount <= 0 
+    return false
+
   # Position has to have good returns if simultaneous entry / exit...
-  if pos.entry && pos.exit
-    if pos.expected_return < settings.min_return  
+  if !pos.rebalancing && entry && exit && settings.min_return?
+    if 100 * pos.expected_profit / exit.amount < settings.min_return  
+      # console.log "#{(pos.expected_return).toFixed(2)}% is not enough expected profit"
       return false 
       failure_reasons.push "#{(pos.expected_return).toFixed(2)}% is not enough expected profit"
 
   # A strategy can't have too many positions on the books at once...
-  if open_positions[pos.dealer].length > (settings.max_open_positions or dealer_defaults.max_open_positions) - 1
+  if !pos.rebalancing && !settings.never_exits && open_positions[pos.dealer].length > settings.max_open_positions - 1
+    # console.log "#{settings.max_open_positions} POSITIONS ALREADY ON BOOKS"
     return false 
-    failure_reasons.push "#{(settings.max_open_positions or dealer_defaults.max_open_positions)} POSITIONS ALREADY ON BOOKS"
+    failure_reasons.push "#{settings.max_open_positions} POSITIONS ALREADY ON BOOKS"
 
 
   # Space positions from the same strategy out
-  for other_pos in open_positions[pos.dealer]
-    if tick.time - other_pos.created < (settings.cooloff_period or dealer_defaults.cooloff_period)
-      return false 
-      failure_reasons.push "TOO MANY POSITIONS IN LAST #{(settings.cooloff_period or dealer_defaults.cooloff_period)} SECONDS"
-      break
+  if !pos.rebalancing
+    position_set = if settings.never_exits then from_cache(pos.dealer).positions else open_positions[pos.dealer]
+    for other_pos in position_set when !other_pos.rebalancing
+      if tick.time - other_pos.created < settings.cooloff_period
+        # console.log "TOO MANY POSITIONS IN LAST #{settings.cooloff_period} SECONDS"
 
-  if settings.alternating_types
+        return false 
+        failure_reasons.push "TOO MANY POSITIONS IN LAST #{settings.cooloff_period} SECONDS"
+        break
+
+  if !pos.rebalancing && settings.alternating_types
     buys = sells = 0 
     for other_pos in open_positions[pos.dealer]
-      if other_pos.entry.type == 'buy'
+      if other_entry.type == 'buy'
         buys++
       else 
         sells++
 
-    if (pos.entry.type == 'buy' && buys > sells) || (pos.entry.type == 'sell' && sells > buys)
+    if (entry.type == 'buy' && buys > sells) || (entry.type == 'sell' && sells > buys)
       return false 
       failure_reasons.push "Positions need to alternate"
 
 
-  # console.log "\tEvaluating #{pos.strategy} candidate position"
-  # if failure_reasons.length > 0 
-  #   for failure in failure_reasons 
-  #     console.log "\t\t#{failure}"
-  # else 
-  #   console.log "\t...looks good"
-
   return true #failure_reasons.length == 0 
 
 
-hustle = (balance, trades) -> 
+action_priorities =
+  create: 0
+  exit: 1
+  update_exit: 2
+  cancel_unfilled: 3
 
+hustle = (balance, trades) -> 
   yyy = Date.now()     
-  opportunities = find_opportunities trades, balance.exchange_fee
+  opportunities = find_opportunities trades, balance.exchange_fee, balance
   t_.hustle += Date.now() - yyy if t_?
 
   if opportunities.length > 0
+    #yyy = Date.now()
 
-    yyy = Date.now()
-    sufficient_funds = check_wallet opportunities, balance.balances
+    # prioritize exits & cancelations over new positions
+    opportunities.sort (a,b) -> action_priorities[b.action] - action_priorities[a.action]
 
-    if sufficient_funds
-      execute_opportunities opportunities, balance.exchange_fee
-    t_.executing += Date.now() - yyy if t_?
+    if config.enforce_balance
+      fillable_opportunities = check_wallet opportunities, balance
+    else 
+      fillable_opportunities = opportunities
 
-module.exports = {init, hustle, register_strategy, destroy_position}
+    # if fillable_opportunities.length != opportunities.length
+    #   console.log "Slimmed opportunities from #{opportunities.length} to #{fillable_opportunities.length}"
+    #   # for op in opportunities
+    #   #   if op not in fillable_opportunities
+    #   #     console.log 'ELIMINATED:', op.pos.dealer
+    if fillable_opportunities.length > 0 
+      execute_opportunities fillable_opportunities, balance.exchange_fee, balance
+
+    #t_.exec += Date.now() - yyy if t_?
+
+pusher = module.exports = {init, hustle, learn_strategy, destroy_position, unregister_strategies, reset_open}
 
 
-
-bus('/all_data').on_fetch = (key) ->
-
-  dealers_data = {}
-  for dealer in get_dealers(true)  
-    dealers_data[dealer] = from_cache(dealer)
-
-  return {
-    key: key
-    dealers: dealers_data
-    strategies: from_cache '/operation'
-    time: from_cache '/time'
-    balances: from_cache '/balances'
-  }
