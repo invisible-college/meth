@@ -477,13 +477,6 @@ update_position_status = (end_idx, balance, dealers_with_open) ->
       delete pos.expected_profit
       pos.profit = (balance.accounted_for.c1 - cur_c1) / pos.exit.rate + (balance.accounted_for.c2 - cur_c2) 
 
-      if pos.dealer of slow_start_settings
-        if (pos.profit or pos.expected_profit) >= 0
-          slow_start_settings[pos.dealer] += .1
-          slow_start_settings[pos.dealer] = Math.min 1, slow_start_settings[pos.dealer]
-        else 
-          slow_start_settings[pos.dealer] *= .5
-
 
 fill_order = (my_trade, end_idx, status) -> 
 
@@ -689,7 +682,6 @@ reset = ->
 
 
   global.open_positions = {}
-  global.slow_start_settings = {}
 
   history.trades = []
 

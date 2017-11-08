@@ -6,7 +6,6 @@ global.dealers = {}
 global.feature_engines = {}
 
 global.open_positions = {}
-global.slow_start_settings = {}
 
 
 learn_strategy = (name, teacher, strat_dealers) -> 
@@ -74,9 +73,6 @@ learn_strategy = (name, teacher, strat_dealers) ->
       dealer: name 
 
     dealers[key] = dealer 
-
-    if dealer_conf.penalize_losses? &&  dealer_conf.penalize_losses > -1
-      slow_start_settings[key] = 1
 
     if ('/' + key) not in strategy.dealers
       strategy.dealers.push '/' + key
@@ -191,10 +187,6 @@ find_opportunities = (trade_history, exchange_fee, balance) ->
       dealer_data = from_cache(name)
       settings = dealer_data.settings
       
-      if name of slow_start_settings
-        slow_start_settings[name] += settings.penalize_losses / config.checks_per_frame
-        slow_start_settings[name] = Math.min 1, slow_start_settings[name]
-
       zzz = Date.now()
 
       # A strategy can't have too many positions on the books at once...
