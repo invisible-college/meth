@@ -684,30 +684,26 @@ dom.TIME_SERIES.refresh = ->
         sell: []
 
       for dealer in dealers_in_focus()
-        for p in cached_positions[dealer] when !p.rebalancing
+        for p in cached_positions[dealer]
           for trade in [p.entry, p.exit] when trade
             x.push 1000 * (trade.closed or trade.created)
             y.push trade.rate 
-            if p.rebalancing
-              colors.push .5
-              size.push 4
+            if trade.type == 'sell'
+              colors.push 0
             else 
-              if trade.type == 'sell'
-                colors.push 0
-              else 
-                colors.push 1
+              colors.push 1
 
-              if p.closed
-                size.push 8
-                opacities.push .5
-                borderwidths.push 0
+            if p.closed
+              size.push 8
+              opacities.push .5
+              borderwidths.push 0
+            else 
+              opacities.push .9                
+              size.push 12
+              if !trade.closed
+                borderwidths.push 1
               else 
-                opacities.push .9                
-                size.push 12
-                if !trade.closed
-                  borderwidths.push 1
-                else 
-                  borderwidths.push 0
+                borderwidths.push 0
 
 
           if p.entry && p.exit 
@@ -1609,8 +1605,7 @@ dom.ACTIVITY = ->
     for dealer in dealers_in_focus()
 
       rows = (pos for pos in \
-              cached_positions[dealer] when  (!@local.filter_to_incomplete || !pos.closed) \
-                                        && ( (!@local.filter_to_rebalancing && !pos.rebalancing) || (@local.filter_to_rebalancing && pos.rebalancing)))
+              cached_positions[dealer] when  (!@local.filter_to_incomplete || !pos.closed))
 
     rows = [].concat rows...
 
@@ -1654,9 +1649,7 @@ dom.ACTIVITY = ->
       ]
 
       ['Entry', (pos) -> 
-        SPAN 
-          style: 
-            color: if pos.rebalancing then feedback_orange
+        SPAN null,
           if pos.entry?.closed then " #{prettyDate(pos.entry.closed)}" else ''
       ]
       ['', (pos) -> 
@@ -1695,19 +1688,6 @@ dom.ACTIVITY = ->
     LABEL 
       htmlFor: 'incompletefilter'
       'Filter to incomplete'
-
-
-    INPUT 
-      id: 'rebalancingfilter'
-      type: 'checkbox'
-      defaultChecked: @local.filter_to_rebalancing
-
-      onChange: (e) =>
-        @local.filter_to_rebalancing = event.target.checked
-        save @local
-    LABEL 
-      htmlFor: 'rebalancingfilter'
-      'Show rebalancing'
 
 
     METH_TABLE

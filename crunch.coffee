@@ -85,7 +85,7 @@ compute_KPI = (dealer_or_dealers, name) ->
 
 
 
-  for p in positions when !p.rebalancing
+  for p in positions
     more_than_day  += 1 if (!p.closed && ts - p.created > 24 * 60 * 60) || ( p.closed && p.closed - p.created > 24 * 60 * 60)
     more_than_hour += 1 if (!p.closed && ts - p.created > 60 * 60) || ( p.closed && p.closed - p.created > 60 * 60)
      
@@ -113,7 +113,7 @@ compute_KPI = (dealer_or_dealers, name) ->
   
   trades.sort (a,b) -> b.closed - a.closed 
 
-  positions_by_closed = (p for p in positions when p.closed && !p.rebalancing)
+  positions_by_closed = (p for p in positions when p.closed)
   positions_by_closed.sort (a,b) -> b.closed - a.closed
   positions_by_created = positions_by_closed.slice() #positions.slice()
   positions_by_created.sort (a,b) -> b.created - a.created
@@ -589,7 +589,7 @@ indicators =
     indicator_cache.avg_duration ||= {}      
     return indicator_cache.avg_duration[s] if s of indicator_cache.avg_duration 
 
-    durations = ( (p.closed - p.created) / 60 for p in cached_positions[s] when p.closed && !p.rebalancing)
+    durations = ( (p.closed - p.created) / 60 for p in cached_positions[s] when p.closed)
     avg_duration = if durations.length > 0 then Math.average durations else 0
     indicator_cache.avg_duration[s] = avg_duration
     avg_duration
@@ -598,7 +598,7 @@ indicators =
     indicator_cache.median_duration ||= {}      
     return indicator_cache.median_duration[s] if s of indicator_cache.median_duration 
 
-    durations = ( (p.closed - p.created) / 60 for p in cached_positions[s] when p.closed && !p.rebalancing)
+    durations = ( (p.closed - p.created) / 60 for p in cached_positions[s] when p.closed)
     median_duration = if durations.length > 0 then Math.median durations else 0
     indicator_cache.median_duration[s] = median_duration
     median_duration

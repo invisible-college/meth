@@ -680,6 +680,7 @@ set_expected_profit = (pos, exchange_fee) ->
 # automatically applied if entry & exit specified immediately: 
 #     - profit threshold
 
+LOG_REASONS = false 
 is_valid_position = (pos, balance) ->  
   return false if !pos
   return true if pos.series_data
@@ -687,7 +688,9 @@ is_valid_position = (pos, balance) ->
   
   settings = get_settings(pos.dealer)
 
-  # failure_reasons = []
+
+  if LOG_REASONS
+    failure_reasons = []
 
   entry = pos.entry 
   exit = pos.exit
@@ -695,38 +698,38 @@ is_valid_position = (pos, balance) ->
   # Non-zero rates
   if (entry && (entry.rate == 0 or isNaN(entry.rate))) || (exit && (exit.rate == 0 or isNaN(exit.rate)))
     # console.log "Can't have a zero rate"
-    return false 
+    return false if !LOG_REASONS
     failure_reasons.push "Can't have a zero rate"
 
   if entry.amount <= 0 || exit?.amount <= 0 
-    return false
+    return false if !LOG_REASONS
+    failure_reasons.push "Can't have a negative amount"
 
   # Position has to have good returns if simultaneous entry / exit...
-  if !pos.rebalancing && entry && exit && settings.min_return?
+  if entry && exit && settings.min_return?
     if 100 * pos.expected_profit / exit.amount < settings.min_return  
       # console.log "#{(pos.expected_return).toFixed(2)}% is not enough expected profit"
-      return false 
+      return false if !LOG_REASONS 
       failure_reasons.push "#{(pos.expected_return).toFixed(2)}% is not enough expected profit"
 
   # A strategy can't have too many positions on the books at once...
-  if !pos.rebalancing && !settings.never_exits && open_positions[pos.dealer].length > settings.max_open_positions - 1
+  if !settings.never_exits && open_positions[pos.dealer].length > settings.max_open_positions - 1
     # console.log "#{settings.max_open_positions} POSITIONS ALREADY ON BOOKS"
-    return false 
+    return false if !LOG_REASONS 
     failure_reasons.push "#{settings.max_open_positions} POSITIONS ALREADY ON BOOKS"
 
 
   # Space positions from the same strategy out
-  if !pos.rebalancing
-    position_set = if settings.never_exits then from_cache(pos.dealer).positions else open_positions[pos.dealer]
-    for other_pos in position_set when !other_pos.rebalancing
-      if tick.time - other_pos.created < settings.cooloff_period
-        # console.log "TOO MANY POSITIONS IN LAST #{settings.cooloff_period} SECONDS"
+  position_set = if settings.never_exits then from_cache(pos.dealer).positions else open_positions[pos.dealer]
+  for other_pos in position_set
+    if tick.time - other_pos.created < settings.cooloff_period
+      # console.log "TOO MANY POSITIONS IN LAST #{settings.cooloff_period} SECONDS"
 
-        return false 
-        failure_reasons.push "TOO MANY POSITIONS IN LAST #{settings.cooloff_period} SECONDS"
-        break
+      return false if !LOG_REASONS 
+      failure_reasons.push "TOO MANY POSITIONS IN LAST #{settings.cooloff_period} SECONDS"
+      break
 
-  if !pos.rebalancing && settings.alternating_types
+  if settings.alternating_types
     buys = sells = 0 
     for other_pos in open_positions[pos.dealer]
       if other_entry.type == 'buy'
@@ -735,7 +738,7 @@ is_valid_position = (pos, balance) ->
         sells++
 
     if (entry.type == 'buy' && buys > sells) || (entry.type == 'sell' && sells > buys)
-      return false 
+      return false if !LOG_REASONS 
       failure_reasons.push "Positions need to alternate"
 
 

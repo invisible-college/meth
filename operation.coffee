@@ -212,8 +212,6 @@ update_position_status = (callback) ->
               pos.profit = (sell.total - buy.total - sell.fee - buy.fee) / pos.exit.rate + (buy.amount - sell.amount)
             pos.closed = Math.max pos.entry.closed, pos.exit.closed
           
-          if pos.entry?.closed && pos.rebalancing
-            pos.closed = pos.entry.closed
 
           changed = JSON.stringify(pos) != before
           if changed || !pos.closed

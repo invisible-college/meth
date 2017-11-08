@@ -435,7 +435,7 @@ update_position_status = (end_idx, balance, dealers_with_open) ->
           trade.closed = if trade.force_canceled then tick.time else trade.fills[trade.fills.length - 1].date
           global.position_status[key] = undefined
 
-      if (pos.entry?.closed && pos.exit?.closed) || (pos.rebalancing && pos.entry?.closed) || (dealers[dealer].never_exits && pos.entry?.closed)
+      if (pos.entry?.closed && pos.exit?.closed) || (dealers[dealer].never_exits && pos.entry?.closed)
         pos.closed = Math.max pos.entry.closed, (pos.exit?.closed or 0)
         closed.push pos 
 
@@ -474,16 +474,15 @@ update_position_status = (end_idx, balance, dealers_with_open) ->
           balance[name].accounted_for.c1 += trade.total 
           balance[name].accounted_for.c1 -= trade.total * balance.exchange_fee
 
-      if !pos.rebalancing
-        delete pos.expected_profit
-        pos.profit = (balance.accounted_for.c1 - cur_c1) / pos.exit.rate + (balance.accounted_for.c2 - cur_c2) 
+      delete pos.expected_profit
+      pos.profit = (balance.accounted_for.c1 - cur_c1) / pos.exit.rate + (balance.accounted_for.c2 - cur_c2) 
 
-        if pos.dealer of slow_start_settings
-          if (pos.profit or pos.expected_profit) >= 0
-            slow_start_settings[pos.dealer] += .1
-            slow_start_settings[pos.dealer] = Math.min 1, slow_start_settings[pos.dealer]
-          else 
-            slow_start_settings[pos.dealer] *= .5
+      if pos.dealer of slow_start_settings
+        if (pos.profit or pos.expected_profit) >= 0
+          slow_start_settings[pos.dealer] += .1
+          slow_start_settings[pos.dealer] = Math.min 1, slow_start_settings[pos.dealer]
+        else 
+          slow_start_settings[pos.dealer] *= .5
 
 
 fill_order = (my_trade, end_idx, status) -> 
@@ -576,7 +575,7 @@ store_analysis = ->
     dealer = dealers[name]
     settings = get_settings(name) or {}
 
-    for pos in positions when !pos.rebalancing
+    for pos in positions
       row = dealer.analyze(pos, config.exchange_fee)
       independent = extend {}, row.independent, settings
       rows.push ( (if col of independent then independent[col] else row.dependent[col]) for col in cols)
