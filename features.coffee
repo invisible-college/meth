@@ -75,7 +75,7 @@ f = module.exports =
         #t1t = Date.now() if config.log
         for trade, idx in trades 
 
-          if tick.time < trade.date
+          if config.simulation && tick.time < trade.date
             console.assert false, 
               message: 'Future trades pumped into feature engine'
               trade: trade 

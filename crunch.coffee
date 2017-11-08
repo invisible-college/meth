@@ -282,7 +282,7 @@ KPI = (callback) ->
     dates.sort()
     KPI.period_length = (dates[1] - dates[0]) / 1000
 
-  console.log 'Computing KPIs'
+  console.log '\n\nComputing KPIs'
 
   dealers = Object.keys(cached_positions)
   series_data = get_series()
@@ -373,21 +373,21 @@ dealer_measures = (stats) ->
     if s of stats 
       "#{indicators.median_return(s,stats).toFixed(2)}%"
 
-  'μ loss': (s) -> 
-    if s of stats 
-      "#{indicators.avg_loss(s,stats).toFixed(2)}%"
+  # 'μ loss': (s) -> 
+  #   if s of stats 
+  #     "#{indicators.avg_loss(s,stats).toFixed(2)}%"
 
-  'x͂ loss': (s) -> 
-    if s of stats 
-      "#{indicators.median_loss(s,stats).toFixed(2)}%"
+  # 'x͂ loss': (s) -> 
+  #   if s of stats 
+  #     "#{indicators.median_loss(s,stats).toFixed(2)}%"
 
-  'μ gain': (s) -> 
-    if s of stats 
-      "#{indicators.avg_gain(s,stats).toFixed(2)}%"
+  # 'μ gain': (s) -> 
+  #   if s of stats 
+  #     "#{indicators.avg_gain(s,stats).toFixed(2)}%"
 
-  'x͂ gain': (s) -> 
-    if s of stats 
-      "#{indicators.median_gain(s,stats).toFixed(2)}%"
+  # 'x͂ gain': (s) -> 
+  #   if s of stats 
+  #     "#{indicators.median_gain(s,stats).toFixed(2)}%"
 
 
 
@@ -508,7 +508,7 @@ indicators =
 
     #annualize
     ret *= 365 * 24 * 60 * 60 / (stats[s].metrics.end - stats[s].metrics.start)
-    indicator_cache.return[s] = ret 
+    indicator_cache.return[s] = ret
 
     ret
 
@@ -517,6 +517,7 @@ indicators =
     return indicator_cache.avg_return[s] if s of indicator_cache.avg_return 
 
     returns = (r[1] for r in stats[s].metrics.returns when r[1] != 0)
+
     avg_return = if returns.length > 0 then Math.average returns else 0
     indicator_cache.avg_return[s] = avg_return
     avg_return

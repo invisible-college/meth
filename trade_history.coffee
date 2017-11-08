@@ -7,9 +7,15 @@ module.exports = history =
   trades: []
 
 
-  load_price_data: (start, end, callback) -> 
+  load_price_data: (start, end, callback, callback_empty) -> 
     fs.mkdirSync "price_data/" if !fs.existsSync("price_data/") 
     fs.mkdirSync "price_data/#{config.exchange}" if !fs.existsSync("price_data/#{config.exchange}")
+
+    proceed = true 
+    cb_empty = -> 
+      if callback_empty
+        callback_empty()
+        proceed = false
 
     done = -> 
       length = null
@@ -19,12 +25,13 @@ module.exports = history =
         if length == null 
           length = v.length 
           k1 = k 
+
         else
           if v.length != length
             console.log k1, new Date(price_data[k1][0].date * 1000).toISOString(), new Date(price_data[k1][price_data[k1].length - 1].date * 1000).toISOString()
             console.log k, new Date(price_data[k][0].date * 1000).toISOString(), new Date(price_data[k][price_data[k].length - 1].date * 1000).toISOString()
             console.log {message: "Price data of different length!", c1: config.c1, c2: config.c2, accounting: config.accounting_currency, key1: k1, key2: k, len1: length, len2: v.length}
-
+            console.log price_data
             setTimeout load_history, 1000
             return
 
@@ -32,15 +39,20 @@ module.exports = history =
 
     load_history = -> 
       history.load_chart_history "c1xc2", config.c1, config.c2, start, end, -> 
+        return if !proceed
         if config.accounting_currency not in [config.c1, config.c2]
           history.load_chart_history "c1", config.accounting_currency, config.c1, start, end, -> 
-            history.load_chart_history "c2", config.accounting_currency, config.c2, start, end, done
+            return if !proceed
+            history.load_chart_history "c2", config.accounting_currency, config.c2, start, end, done, cb_empty
+          , cb_empty
         else 
           done()
 
+      , cb_empty
+
     load_history()
 
-  load_chart_history: (name, c1, c2, start, end, cb) -> 
+  load_chart_history: (name, c1, c2, start, end, cb, callback_empty) -> 
     console.assert c1 != c2, {message: 'why you loading price history for the same coin traded off itself?', c1: c1, c2: c2}
 
     period = 86400
@@ -77,15 +89,21 @@ module.exports = history =
 
           if error 
             console.log "#{config.exchange} returned bad price history for #{c1}-#{c2}."
-            if price_history && price_history.length > 0 
+            if price_history && price_history.length > 0 && price_history[0].date > 0 && price_history[price_history.length - 1].date > 0 
               console.log 
                 first: price_history[0].date
                 target_start: start 
                 last: price_history[price_history.length - 1].date + period
                 target_end: end 
+                first_entry: price_history[0]
+                last_entry: price_history[price_history.length - 1]
 
             else 
               console.log price_history 
+              if callback_empty
+                callback_empty()
+                cb()
+                return
             console.log "Trying again."
             load_chart()
 
@@ -207,12 +225,10 @@ module.exports = history =
 
 
 hours_loading = 0
-# dups = 0
 load_hour = (hour, end) -> 
   fname = "trade_history/#{config.exchange}/#{config.c1}_#{config.c2}/#{hour}"
 
-  try 
-    fs.accessSync fname
+  if fs.existsSync fname
 
     from_file = fs.readFileSync(fname, 'utf8')
     trades = JSON.parse from_file
@@ -220,21 +236,10 @@ load_hour = (hour, end) ->
     for trade in trades when trade.date <= end
       history.trades.push trade
 
-    # history_hash = {}
-    # for trade in trades when trade.date <= end
-    #   key = JSON.stringify(trade)
-    #   history_hash[key] ||= []
-    #   history_hash[key].push trade
-    # dates = []
-    # for k,v of history_hash
-    #   if v.length > 1 
-    #     dups += v.length
-    #     dates.push trade.date
-
     # console.log "...loaded hour #{hour} via file"
     return null 
 
-  catch e  
+  else
     if !config.offline
       f = (complete) -> 
 
@@ -263,15 +268,11 @@ load_hour = (hour, end) ->
 
 process_new_trade = (trade, preserve_sort) ->
   
-  delete trade.globalTradeID if trade.globalTradeID
-  delete trade.tradeID if trade.tradeID
-  delete trade.type if trade.type
-
   trade.rate   = parseFloat trade.rate
   trade.amount = parseFloat trade.amount 
   trade.total  = parseFloat trade.total
 
-  trade.date = Date.parse(trade.date + " +0000") / 1000
+
 
   if preserve_sort
     history.trades.unshift trade 

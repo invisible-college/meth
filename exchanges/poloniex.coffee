@@ -24,7 +24,13 @@ module.exports = poloniex =
       start: opts.start - opts.period
       end: opts.end + opts.period
     , (__, _, price_history) -> 
-      callback(price_history)
+      if !price_history
+        console.error "Error getting price history. Retrying."
+        setTimeout ->
+          poloniex.get_chart_data opts, callback 
+        , 200
+      else 
+        callback(price_history)
 
   get_trade_history: (opts, callback) -> 
 
@@ -34,7 +40,16 @@ module.exports = poloniex =
       start: opts.start 
       end: opts.end
     , (__, _, trades) -> 
-      callback(trades)
+
+      if !trades
+        console.error "Error getting trades. Retrying."
+        setTimeout ->
+          poloniex.get_trade_history opts, callback 
+        , 200
+      else 
+        for trade in trades 
+          trade.date = Date.parse(trade.date + " +0000") / 1000
+        callback(trades)
 
   subscribe_to_trade_history: (opts, callback) -> 
     WS = require('ws')
@@ -74,7 +89,7 @@ module.exports = poloniex =
           rate: trade[3]
           amount: trade[4]
           total: trade[3] * trade[4]
-          date: new Date(parseInt(trade[5]) * 1000).toUTCString()
+          date: trade[5]
 
 
     connection.onclose = (e) -> 
@@ -96,26 +111,35 @@ module.exports = poloniex =
 
 
 
-  get_your_trade_history: (opts, callback) -> 
+  get_my_fills: (opts, callback) -> 
     poloniex.query_trading_api
       command: 'returnTradeHistory'
       currencyPair: "#{opts.c1}_#{opts.c2}"
       start: opts.start
       end: opts.end
-    , (err, resp, trade_history) ->
-      trade_history ||= []
-      for trade in trade_history
-        trade.order_id = trade.orderNumber
-        trade.amount = parseFloat trade.amount
-        trade.total = parseFloat trade.total
-        trade.rate = parseFloat trade.rate
-        trade.fee = parseFloat(trade.fee) * (if trade.type == 'buy' then trade.amount else trade.total)
-        trade.date = Date.parse(trade.date + " +0000")
+    , (__, _, fills) ->
+      if !fills 
+        console.error "Error getting my fills. Retrying."
+        setTimeout ->
+          poloniex.get_my_fills opts, callback 
+        , 200
+      else  
+        my_fills = []
+        for fill in fills 
+          my_fills.push 
+            order_id: fill.orderNumber 
+            fill_id: fill.tradeID 
+            amount: parseFloat fill.amount
+            total: parseFloat fill.total
+            rate: parseFloat fill.rate
+            fee: parseFloat(fill.fee) * (if fill.type == 'buy' then fill.amount else fill.total)
+            date: Date.parse(fill.date + " +0000") / 1000
 
-      callback(trade_history)
+        callback(my_fills)
 
 
-  get_your_open_orders: (opts, callback) -> 
+
+  get_my_open_orders: (opts, callback) -> 
 
     poloniex.query_trading_api
       command: 'returnOpenOrders'
@@ -123,47 +147,63 @@ module.exports = poloniex =
     , (err, resp, all_open_orders) ->
 
       if !all_open_orders
-        console.error "No response!", {err, resp, all_open_orders}
+        console.error "Error getting my open orders. Retrying."
+        setTimeout ->
+          poloniex.get_my_open_orders opts, callback 
+        , 200
 
-      for trade in all_open_orders
-        trade.order_id = trade.orderNumber
-        trade.amount = parseFloat trade.amount
-        trade.total = parseFloat trade.total
-        trade.rate = parseFloat trade.rate
-        trade.date = Date.parse(trade.date + " +0000")
-      callback(all_open_orders)
+      else 
 
-  get_your_balance: (opts, callback) -> 
+        for trade in all_open_orders
+          trade.order_id = trade.orderNumber
+          trade.amount = parseFloat trade.amount
+          trade.total = parseFloat trade.total
+          trade.rate = parseFloat trade.rate
+          trade.date = Date.parse(trade.date + " +0000") / 1000
+        callback(all_open_orders)
+
+  get_my_balance: (opts, callback) -> 
     poloniex.query_trading_api
       command: 'returnCompleteBalances'
-    , (err, resp, body) -> callback(body)
+    , (err, resp, body) -> 
 
-  get_your_deposit_history: (opts, callback) -> 
-    poloniex.query_trading_api
-      command: 'returnDepositsWithdrawals'
-      start: opts.start
-      end: opts.end
-    , (err, resp, body) ->
-     
-      if !body
-        callback
-          error: err 
-          response: resp 
-          message: body.error 
+      if !body || body.error 
+        console.error 
+          message: 'Error getting balance, retrying'
+          error: body.error
+
+        poloniex.get_my_balance opts, callback
       else 
-        callback body    
 
-  get_your_exchange_fee: (opts, callback) -> 
+        balances = {}
+        for currency, balance of body
+          if currency in opts.currencies
+            balances[currency] = 
+              available: balance.available
+              on_order: balance.onOrders
+
+        callback balances
+
+
+  get_my_exchange_fee: (opts, callback) -> 
     poloniex.query_trading_api
       command: 'returnFeeInfo'
-    , (err, resp, body) -> callback(body)
+    , (err, resp, body) -> 
+
+      console.assert body && !body.error, 
+        message: 'Exchange fee returned error'
+        error: body.error
+
+      callback
+        taker_fee: parseFloat body.takerFee
+        maker_fee: parseFloat body.makerFee
 
   place_order: (opts, callback) -> 
     poloniex.query_trading_api
       command: opts.type
       amount: opts.amount
       rate: opts.rate
-      currencyPair: opts.currency_pair
+      currencyPair: "#{opts.c1}_#{opts.c2}"
     , (err, resp, body) ->
 
       if !body
@@ -173,7 +213,7 @@ module.exports = poloniex =
           message: body.error 
       else 
         body.order_id = body.orderNumber
-        callback body  
+        callback body
 
   cancel_order: (opts, callback) -> 
 
@@ -188,13 +228,6 @@ module.exports = poloniex =
 
       callback body 
 
-      if !body
-        callback
-          error: err 
-          response: resp 
-          message: body.error 
-      else 
-        callback body
 
 
   move_order: (opts, callback) -> 
@@ -202,7 +235,7 @@ module.exports = poloniex =
       command: 'moveOrder'
       orderNumber: opts.order_id
       rate: opts.rate
-      amount: if opts.amount? then opts.amount
+      amount: opts.amount
     , (err, resp, body) ->
 
       if body?.error == 'Invalid order number, or you are not the person who placed the order.'
@@ -216,8 +249,7 @@ module.exports = poloniex =
           message: body.error 
 
       else 
-        body.order_id = body.orderNumber
-        callback body       
+        callback {order_id: body.orderNumber}       
 
 
 

@@ -73,27 +73,27 @@ dom.BODY = ->
 
         SECTION 
           key: 'bank'
-          name: 'Statement'
+          name: 'Account Overview'
           show_by_default: true
           render: -> BANK key: 'bank'
 
         SECTION 
           key: 'performance'
-          name: 'Performance'
+          name: 'Dealer performance'
           show_by_default: true 
           render: -> PERFORMANCE key: 'performance'
-
-        SECTION 
-          key: 'parameter selection'
-          name: "Parameter selection"
-          show_by_default: false
-          render: -> PARAMETER_SELECTOR key: 'PARAMETER_SELECTOR'
 
         SECTION
           key: 'graphs' + md5(JSON.stringify(dealers_in_focus()))
           name: 'Time series'
           show_by_default: false
           render: -> TIME_SERIES() #GRAPHS key: 'graphs'
+
+        SECTION 
+          key: 'parameter selection'
+          name: "Performance by variable"
+          show_by_default: false
+          render: -> PARAMETER_SELECTOR key: 'PARAMETER_SELECTOR'
 
         SECTION
           key: 'threevars'
@@ -103,7 +103,7 @@ dom.BODY = ->
 
         SECTION 
           key: 'activity'
-          name: 'Trades'
+          name: 'All activity'
           show_by_default: false
           render: -> ACTIVITY key: 'table'
 
@@ -1496,11 +1496,11 @@ dom.SELECT_PARAMS = ->
       ['μ return', (p) -> format p, false, false, (s) -> indicators.avg_return(s,stats)]      
       ['x͂ return', (p) -> format p, false, false, (s) -> indicators.median_return(s,stats)]      
 
-      ['μ loss',   (p) -> format p, false, false, (s) -> indicators.avg_loss(s,stats)]
-      ['x͂ loss',   (p) -> format p, false, false, (s) -> indicators.median_loss(s,stats)]
+      # ['μ loss',   (p) -> format p, false, false, (s) -> indicators.avg_loss(s,stats)]
+      # ['x͂ loss',   (p) -> format p, false, false, (s) -> indicators.median_loss(s,stats)]
 
-      ['μ gain',   (p) -> format p, false, false, (s) -> indicators.avg_gain(s,stats)]
-      ['x͂ gain',   (p) -> format p, false, false, (s) -> indicators.median_gain(s,stats)]
+      # ['μ gain',   (p) -> format p, false, false, (s) -> indicators.avg_gain(s,stats)]
+      # ['x͂ gain',   (p) -> format p, false, false, (s) -> indicators.median_gain(s,stats)]
 
       ]
 
@@ -1773,13 +1773,30 @@ dom.BANK = ->
         if trade.type == 'buy'
           for fill in (trade.fills or [])
             balance_sum_from_positions.c2 += fill.amount
-            balance_sum_from_positions.c2 -= fill.amount * xfee 
             balance_sum_from_positions.c1 -= fill.total
+
+            if config.exchange == 'poloniex'
+              balance_sum_from_positions.c2 -= (if fill.fee? then fill.fee else fill.amount * xfee)
+            else 
+              balance_sum_from_positions.c1 -= (if fill.fee? then fill.fee else fill.total * xfee)
+
         else 
           for fill in (trade.fills or [])
             balance_sum_from_positions.c2 -= fill.amount
             balance_sum_from_positions.c1 += fill.total
-            balance_sum_from_positions.c1 -= fill.total * xfee 
+            balance_sum_from_positions.c1 -= (if fill.fee? then fill.fee else fill.total * xfee)
+
+
+      console.log 
+        c1: balance_sum_from_positions.c1
+        c2: balance_sum_from_positions.c2
+        # c1_flat: btc 
+        # c2_flat: eth
+        # c1_on_order: btc_on_order
+        # c2_on_order: eth_on_order
+        c1_deposit: balances[dealer].deposits.c1
+        c2_deposit: balances[dealer].deposits.c2
+
 
     checks = true 
     for currency in currencies
@@ -1792,8 +1809,8 @@ dom.BANK = ->
       if !checks 
         ['Double check', (currency) -> ((balance_sum_from_positions[currency] or 0) - (balance[currency] + total_on_order[currency])  ).toFixed(2)]
       ['Available', (currency) -> (balance_sum_from_dealers[currency] or 0).toFixed(2)]
-      if !checks
-        ['Double check', (currency) -> ((balance[currency] or 0) - (balance_sum_from_dealers[currency] or 0)).toFixed(2)]
+      # if !checks
+      #   ['Double check', (currency) -> ((balance[currency] or 0) - (balance_sum_from_dealers[currency] or 0)).toFixed(2)]
 
       ['Deposited', (currency) -> (deposited[currency] or 0).toFixed(2)]
       ['Change', (currency) -> 
@@ -1814,7 +1831,6 @@ dom.BANK = ->
           "$#{($c1 * deposited.c1).toFixed(2)}"
       ]
       ['$ of trading', (currency) -> 
-        console.log {$c2, $c1, balance_sum_from_positions}
         if currency == 'c2'
           "$#{($c2 * balance_sum_from_positions.c2).toFixed(2)}"
         else 

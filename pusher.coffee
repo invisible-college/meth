@@ -287,13 +287,6 @@ find_opportunities = (trade_history, exchange_fee, balance) ->
               opportunity.required_c2 = pos.entry.amount
             else 
               opportunity.required_c1 = pos.entry.amount * opportunity.rate
-            
-          else if opportunity.action == 'update_exit'
-            exit = if pos.entry?.closed then pos.exit else pos.entry 
-
-            if exit.type == 'buy'
-              opportunity.required_c1 = exit.to_fill * (opportunity.rate - exit.rate)
-            # no additional amount needed if sell, we'll just get less in return
 
           opportunity.pos = pos 
           opportunities.push opportunity
@@ -329,12 +322,17 @@ execute_opportunities = (opportunities, exchange_fee, balance) ->
       when 'cancel_unfilled'
         cancel_unfilled pos
 
+      when 'force_cancel'
+        force_cancel pos
+
       when 'exit'
         exit_position pos, opportunity.rate, exchange_fee
         take_position pos
 
       when 'update_exit'
         update_exit pos, opportunity.rate, exchange_fee
+
+
 
 
 
@@ -398,6 +396,14 @@ create_position = (spec, dealer, exchange_fee) ->
     else
       sell.entry = true 
 
+  if config.exchange == 'gdax' 
+    for trade in [buy, sell] when trade
+      if config.c1 == 'USD' # can't have fractions of cents (at least on GDAX!)
+        trade.rate = parseFloat((Math.round(trade.rate * 100) / 100).toFixed(2))
+      else 
+        trade.rate = parseFloat((Math.round(trade.rate * 1000000) / 1000000).toFixed(6))
+      trade.amount = parseFloat((Math.round(trade.amount * 1000000) / 1000000).toFixed(6))
+
   if buy
     buy.type = 'buy'
     buy.to_fill ||= buy.amount
@@ -405,6 +411,8 @@ create_position = (spec, dealer, exchange_fee) ->
   if sell 
     sell.type = 'sell'
     sell.to_fill ||= sell.amount
+
+
 
   position = extend {}, spec,
     key: "position/#{dealer}-#{tick.time}" if !config.simulation
@@ -428,6 +436,15 @@ exit_position = (pos, rate, exchange_fee) ->
     amount: pos.entry.amount
     type: type
     rate: rate 
+
+  if config.exchange == 'gdax' 
+    for trade in [pos.exit.rate] when trade
+      if config.c1 == 'USD' # can't have fractions of cents (at least on GDAX!)
+        trade.rate = parseFloat((Math.round(trade.rate * 100) / 100).toFixed(2))
+      else 
+        trade.rate = parseFloat((Math.round(trade.rate * 1000000) / 1000000).toFixed(6))
+      trade.amount = parseFloat((Math.round(trade.amount * 1000000) / 1000000).toFixed(6))
+
 
   set_expected_profit pos, exchange_fee
   pos
@@ -484,6 +501,15 @@ update_exit = (pos, rate, exchange_fee) ->
     pos.exit = pos.entry 
     pos.entry = p 
 
+
+
+  if config.exchange == 'gdax'
+
+    if config.c1 == 'USD' # can't have fractions of cents (at least on GDAX!)
+      rate = parseFloat((Math.round(rate * 100) / 100).toFixed(2))
+    else 
+      rate = parseFloat((Math.round(rate * 1000000) / 1000000).toFixed(6))
+
   if isNaN(rate) || !rate || rate == 0
     console.assert false, 
       message: 'Bad rate for moving exit!',
@@ -496,9 +522,34 @@ update_exit = (pos, rate, exchange_fee) ->
       pos: pos
       rate: rate
 
+  if pos.exit.to_fill == 0
+    console.assert false, 
+      message: 'trying to move an exit on a trade that should already be closed'
+      trade: pos.exit 
+      fills: pos.exit.fills
+
   last_exit = pos.exit.rate 
 
-  console.log 'UPDATING EXIT', rate 
+  
+  if pos.exit.type == 'buy'
+    # we need to adjust the *amount* we're buying because our buying power has decreased
+    amt_purchased = 0 
+    total_sold = 0 
+    for f in (pos.exit.fills or [])
+      amt_purchased += f.amount
+      total_sold += f.total
+
+    amt_remaining = pos.exit.amount - amt_purchased    
+    total_remaining = amt_remaining * pos.exit.rate 
+    new_amount = total_remaining / rate 
+  else 
+    new_amount = pos.exit.to_fill
+
+
+  if config.exchange == 'gdax' 
+    new_amount = parseFloat((Math.round(new_amount * 1000000) / 1000000).toFixed(6))
+
+
   cb = (error) -> 
     if !error 
       pos.last_exit = last_exit 
@@ -508,6 +559,10 @@ update_exit = (pos, rate, exchange_fee) ->
 
       pos.exit.created = tick.time
       pos.exit.rate = rate
+      if pos.exit.type == 'buy'
+        pos.exit.amount = new_amount + amt_purchased
+        pos.exit.to_fill = new_amount 
+
       set_expected_profit pos, exchange_fee
 
   if pusher.update_exit
@@ -515,10 +570,28 @@ update_exit = (pos, rate, exchange_fee) ->
       pos: pos
       trade: pos.exit
       rate: rate 
-      amount: pos.exit.to_fill 
+      amount: new_amount
     , cb
   else 
     cb()
+
+
+
+force_cancel = (pos) ->
+
+  console.log 'FORCE CANCELED', pos
+
+  cb = -> 
+    for trade in [pos.entry, pos.exit] when trade && !trade.closed
+      trade.amount = trade.amount - trade.to_fill
+      trade.to_fill = 0 
+      trade.force_canceled = true 
+
+  if pusher.cancel_unfilled
+    pusher.cancel_unfilled pos, cb
+  else
+    cb()
+
 
 
 cancel_unfilled = (pos) ->
@@ -582,15 +655,18 @@ set_expected_profit = (pos, exchange_fee) ->
     for trade in [pos.entry, exit]
       if trade.type == 'buy'
         eth += trade.amount 
-        eth -= trade.fee or trade.amount * exchange_fee
+        if config.exchange == 'poloniex'
+          eth -= if trade.fee? then trade.fee else trade.amount * exchange_fee
+        else 
+          btc -= if trade.fee? then trade.fee else (trade.total or trade.amount * trade.rate) * exchange_fee
         btc -= (trade.total or trade.amount * trade.rate)
       else
         eth -= trade.amount 
         btc += (trade.total or trade.amount * trade.rate)
-        btc -= trade.fee or (trade.total or trade.amount * trade.rate) * exchange_fee
+        btc -= if trade.fee? then trade.fee else (trade.total or trade.amount * trade.rate) * exchange_fee
 
     pos.expected_profit = eth + btc / exit.rate
-  pos 
+  pos
 
 
 
@@ -671,6 +747,7 @@ action_priorities =
   exit: 1
   update_exit: 2
   cancel_unfilled: 3
+  force_cancel: 4
 
 hustle = (balance, trades) -> 
   yyy = Date.now()     

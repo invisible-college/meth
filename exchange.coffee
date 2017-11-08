@@ -36,39 +36,36 @@ module.exports = exchange =
   # TRADING API
 
   # opts: 
-  #  currency_pair, start, end, callback
-  get_your_trade_history: (opts, callback) -> 
-    exchange[config.exchange].get_your_trade_history opts, callback
+  #  c1, c2, start, end, callback
+  get_my_fills: (opts, callback) -> 
+    exchange[config.exchange].get_my_fills opts, callback
 
 
   # opts: 
-  #  currency_pair
-  get_your_open_orders: (opts, callback) -> 
-    exchange[config.exchange].get_your_open_orders opts, callback
+  #  c1, c2
+  get_my_open_orders: (opts, callback) -> 
+    exchange[config.exchange].get_my_open_orders opts, callback
 
   # opts: 
-  #  none
-  get_your_balance: (opts, callback) -> 
-    exchange[config.exchange].get_your_balance opts, callback
-
-
-  # opts: 
-  #  start, end
-  get_your_deposit_history: (opts, callback) -> 
-    exchange[config.exchange].get_your_deposit_history opts, callback
+  #  c1, c2
+  get_my_balance: (opts, callback) -> 
+    exchange[config.exchange].get_my_balance 
+      currencies: [opts.c1, config.c2]
+    , callback
 
 
   # opts: 
   #  none
-  get_your_exchange_fee: (opts, callback) -> 
-    exchange[config.exchange].get_your_exchange_fee opts, callback
+  get_my_exchange_fee: (opts, callback) -> 
+    exchange[config.exchange].get_my_exchange_fee opts, callback
 
 
   # opts: 
   #  type (buy / sell)
   #  amount
   #  rate 
-  #  currency_pair
+  #  c1
+  #  c2
   place_order: (opts, callback) -> 
     exchange[config.exchange].place_order opts, callback
 
@@ -82,6 +79,9 @@ module.exports = exchange =
   #  order_id
   #  amount
   #  rate 
+  #  c1
+  #  c2
+  #  type
   move_order: (opts, callback) ->
     exchange[config.exchange].move_order opts, callback 
 

@@ -164,7 +164,7 @@ simulate = (ts, callback) ->
     console.timeEnd('saving db')
 
     console.log "\nDone simulating! That took #{(Date.now() - started_at) / 1000} seconds" if config.log
-    console.log config
+    console.log config if !config.multiple_times
 
     if config.multiple_times
       reset() 
@@ -200,18 +200,6 @@ simulate = (ts, callback) ->
 
     simulation_done = tick.time > ts - config.tick_interval * 10
 
-    if !simulation_done && end_idx != start_idx
-
-      ######################
-      #### Get relevant trades
-      trades = history.trades.slice(end_idx, start_idx)
-      #t_.quant += Date.now() - zzz
-
-      ######################
-      #### Main call. Where the action is. 
-      pusher.hustle balance, trades
-      ######################
-
 
     ######################
     #### Accounting
@@ -229,6 +217,22 @@ simulate = (ts, callback) ->
       update_balance balance, dealers_with_open
       t_.balance += Date.now() - yyy
     #####################
+
+
+
+    if !simulation_done && end_idx != start_idx
+
+      ######################
+      #### Get relevant trades
+      trades = history.trades.slice(end_idx, start_idx)
+      #t_.quant += Date.now() - zzz
+
+      ######################
+      #### Main call. Where the action is. 
+      pusher.hustle balance, trades
+      ######################
+
+
 
 
     if simulation_done
@@ -295,26 +299,30 @@ update_balance = (balance, dealers_with_open) ->
       
       if buy
         # used or reserved for buying trade.amount eth
-        btc_for_purchase = buy.amount * buy.rate
-        dbtc -= btc_for_purchase
-        dbtc_on_order += btc_for_purchase
+        for_purchase = buy.to_fill * buy.rate
+        dbtc_on_order += for_purchase
+        dbtc -= for_purchase
 
         if buy.fills?.length > 0           
           for fill in buy.fills
             deth += fill.amount 
-            deth -= fill.amount * x_fee
-            dbtc_on_order -= fill.total
+            dbtc -= fill.total
+
+            if config.exchange == 'poloniex'
+              deth -= fill.amount * x_fee
+            else 
+              dbtc -= fill.total * x_fee
 
       if sell 
-        eth_for_purchase = sell.amount
-        deth -= eth_for_purchase
-        deth_on_order += eth_for_purchase
+        for_sale = sell.to_fill
+        deth_on_order += for_sale
+        deth -= for_sale
 
         if sell.fills?.length > 0 
           for fill in sell.fills 
+            deth -= fill.amount
             dbtc += fill.total 
             dbtc -= fill.total * x_fee 
-            deth_on_order -= fill.amount
     
     btc += dbtc 
     eth += deth 
@@ -327,8 +335,33 @@ update_balance = (balance, dealers_with_open) ->
     dbalance.on_order.c1 = dbtc_on_order
     dbalance.on_order.c2 = deth_on_order
 
-    if config.enforce_balance
-      console.assert dbalance.balances.c1 >= 0 && dbalance.balances.c2 >= 0, {message: 'negative balance!?!', dealer: dealer, balance: balance.balances, dbalance: balance[dealer], positions: positions, dealer: from_cache(dealer).positions}
+    if config.enforce_balance && (dbalance.balances.c1 < 0 || dbalance.balances.c2 < 0)
+
+      msg =         
+        message: 'negative balance!?!'
+        balance: balance.balances
+        dbalance: balance[dealer]
+        positions: from_cache(dealer).positions
+        dealer: dealer
+
+      for pos in from_cache(dealer).positions 
+        for t in [pos.entry, pos.exit] when t 
+          msg["#{pos.created}-#{t.type}"] = t
+          amt = 0 
+          tot = 0 
+          for f,idx in (t.fills or [])
+            msg["#{pos.created}-#{t.type}-f#{idx}"] = f
+            amt += f.amount 
+            tot += f.total 
+
+          console.log
+            type: t.type 
+            amt: amt
+            tot: tot 
+            fills: (t.fills or []).length
+
+      console.assert false, msg
+
 
   balance.balances.c1 = balance.deposits.c1 + btc + balance.accounted_for.c1
   balance.balances.c2 = balance.deposits.c2 + eth + balance.accounted_for.c2
@@ -369,24 +402,39 @@ update_position_status = (end_idx, balance, dealers_with_open) ->
 
         status = global.position_status[key]
 
-        if trade.to_fill > 0 && (!status? || end_idx < status + 100 )
-          status = global.position_status[key] = predicted_close trade, end_idx, status
+        if trade.to_fill > 0 && (!status? || end_idx < status.idx + 100 )
+          status = global.position_status[key] = fill_order trade, end_idx, status
+          # console.log '\nFILLLLLLLL\n', key, end_idx, status?.idx, status?.fills?.length
 
-        # if pos.rebalancing && trade.fills?.length > 0 
-        #   console.log 
-        #     pos: pos.key
-        #     to_fill: trade.to_fill
-        #     last_fill: trade.fills[trade.fills.length - 1].date
-        #     tick: tick.time
-        #     cond: tick.time >= last_fill
+        if status?.fills?.length > 0 && !trade.force_canceled
+          filled = 0 
+          my_rate = trade.rate 
+
+          for fill in (status.fills or [])
+            if fill.date > tick.time 
+              break 
+
+            done = fill.amount >= trade.to_fill
+
+            fill.amount = if !done then fill.amount           else trade.to_fill 
+            fill.total  = if !done then fill.amount * my_rate else trade.to_fill * my_rate
+
+            trade.to_fill -= fill.amount 
+            trade.fills.push fill
+            filled += 1
+          if filled > 0 
+            status.fills = status.fills.slice(filled)
+
+        if trade.to_fill < 0 
+          console.assert false, 
+            message: 'Overfilled!'
+            trade: trade 
+            fills: trade.fills
 
         if trade.to_fill == 0
-          last_fill = trade.fills[trade.fills.length - 1].date
+          trade.closed = if trade.force_canceled then tick.time else trade.fills[trade.fills.length - 1].date
+          global.position_status[key] = undefined
 
-          if tick.time >= last_fill
-            trade.closed = last_fill
-            global.position_status[key] = undefined
-            
       if (pos.entry?.closed && pos.exit?.closed) || (pos.rebalancing && pos.entry?.closed) || (dealers[dealer].never_exits && pos.entry?.closed)
         pos.closed = Math.max pos.entry.closed, (pos.exit?.closed or 0)
         closed.push pos 
@@ -438,9 +486,11 @@ update_position_status = (end_idx, balance, dealers_with_open) ->
             slow_start_settings[pos.dealer] *= .5
 
 
-predicted_close = (my_trade, end_idx, looked_to) -> 
+fill_order = (my_trade, end_idx, status) -> 
 
-  initial_date = null
+  status ||= {}
+
+
 
   my_amount = my_trade.amount 
   my_rate = my_trade.rate
@@ -448,45 +498,47 @@ predicted_close = (my_trade, end_idx, looked_to) ->
   my_created = my_trade.created 
   trade_lag = config.trade_lag  
 
-
-  if looked_to
-    start_at = looked_to
+  if status.idx
+    start_at = status.idx
   else 
     start_at = end_idx
 
+  to_fill = my_trade.to_fill
+
+  status.fills ||= []
+  fills = status.fills 
+
+  init = false
   for idx in [start_at..0] by -1
     trade = history.trades[idx]
 
-    if !initial_date && trade.date < my_created + trade_lag
-      continue
-
-    if !initial_date
-      initial_date = trade.date
+    if !init
+      if trade.date < my_created + trade_lag
+        continue
+      else 
+        init = true 
 
     if (!is_sell && trade.rate <= my_rate) || \
        ( is_sell && trade.rate >= my_rate)
 
-      done = trade.amount >= my_trade.to_fill 
-
       fill = 
         date: trade.date 
         rate: my_rate 
-        amount: if !done then trade.amount           else my_trade.to_fill 
-        total:  if !done then trade.amount * my_rate else my_trade.to_fill * my_rate
+        amount: trade.amount
 
-      my_trade.fills.push fill
+      # console.log fill
+      fills.push fill
 
-      if done
-        my_trade.to_fill = 0 
-        return trade.date
+      if trade.amount >= to_fill
+        status.idx = idx
+        return status
       else 
-        my_trade.to_fill -= fill.amount
-
+        to_fill -= fill.amount
 
     if trade.date > history.trades[end_idx].date + 30 * 60
-      return idx
+      status.idx = idx 
+      return status
 
-  null 
 
 
 store_analysis = ->
@@ -603,7 +655,7 @@ log_results = ->
 
   KPI (all_stats) -> 
     if !fs.existsSync(fname)
-      cols = ['Name', 'Currency1', 'Currency2', 'Exchange', 'id', 'Start', 'End']
+      cols = ['Name', 'Currency1', 'Currency2', 'Exchange', 'Start', 'End']
 
       for measure, __ of dealer_measures(all_stats)
         cols.push measure
@@ -612,7 +664,7 @@ log_results = ->
 
     rows = [cols]
 
-    row = [config.name, config.c1, config.c2, config.exchange, "#{config.c1}-#{config.c2}-#{config.exchange}", config.end - config.simulation_width, config.end]
+    row = [config.name, config.c1, config.c2, config.exchange, config.end - config.simulation_width, config.end]
 
     for measure, calc of dealer_measures(all_stats)
       row.push calc('all')
@@ -620,7 +672,7 @@ log_results = ->
     rows.push row
 
 
-    console.log "writing", (r.join('\t') for r in rows).join('\n')
+    console.log (r.join('\t') for r in rows).join('\n')
     # out = fs.createWriteStream fname, {flags:'a'}
     # out.write (r.join('\t') for r in rows).join('\n')
     # out.end()
@@ -640,10 +692,11 @@ reset = ->
   global.open_positions = {}
   global.slow_start_settings = {}
 
+  history.trades = []
+
   pusher.init
     history: history 
     clear_all_positions: true 
-    reset_engines: true 
 
 
 
@@ -659,6 +712,7 @@ lab = module.exports =
         conf.simulation_width = time.simulation_width
         conf.end = time.end 
         conf.name = time.name 
+        conf.multiple_times = true
 
         console.log "***********"
         console.log "Next experiment! (#{times.length} more remaining)"

@@ -18,9 +18,8 @@ get_trades = (client, c1, c2, hours, after, stop_when_cached, callback, stop_aft
   cb = (error, response, data) -> 
     i += 1 
 
-    next_page = response.headers['cb-after']
 
-    if error || !data || data.message
+    if error || !data || data.message || !response
       console.error {message: 'error downloading trades! trying again', error: error, data: data}
       setTimeout ->
         client.getProductTrades {after: after, limit: limit}, cb 
@@ -56,7 +55,7 @@ get_trades = (client, c1, c2, hours, after, stop_when_cached, callback, stop_aft
     if stop_after_hour
       continue_loading = early_hour >= stop_after_hour
 
-    continue_loading &&= i * limit < latest_page
+    continue_loading &&= i * limit < latest_page && ('cb-after' of response.headers)
 
     if continue_loading
       if later_hour != early_hour # done processing this hour
@@ -66,7 +65,7 @@ get_trades = (client, c1, c2, hours, after, stop_when_cached, callback, stop_aft
           hr -= 1
 
       setTimeout -> 
-        get_trades client, c1, c2, hours, next_page, stop_when_cached, callback, stop_after_hour
+        get_trades client, c1, c2, hours, response.headers['cb-after'], stop_when_cached, callback, stop_after_hour
       , 1000 / RATE_LIMIT
     else 
       callback?(hours)
@@ -187,7 +186,7 @@ load_chart_data = (client, opts, callback) ->
   all_data = []
   
   i = 0 
-  next = () -> 
+  next = -> 
     start_sec = opts.start + chunk_size * i 
     end_sec = opts.start + chunk_size * (i + 1) - 1 
 
@@ -196,7 +195,7 @@ load_chart_data = (client, opts, callback) ->
 
     cb = (error, response, data) ->
       if error || !data || data.message
-        console.error {message: 'error getting chart data, trying again', error: error, response: response}
+        console.error {message: 'error getting chart data, trying again', error: error, message: data?.message}
         setTimeout -> 
           client.getProductHistoricRates {start, end, granularity}, cb
         , 5000
@@ -221,12 +220,11 @@ load_chart_data = (client, opts, callback) ->
 
 
 
-queue = []
-latest_requests = []
+waiting_to_execute = 0
 outstanding_requests = 0
 
 module.exports = gdax = 
-  all_clear: -> outstanding_requests == 0 && queue.length == 0 
+  all_clear: -> outstanding_requests == 0 && waiting_to_execute == 0 
 
   download_all_trade_history: (opts, callback) ->
     load_trades
@@ -238,6 +236,77 @@ module.exports = gdax =
         for hour, trades of hours
           write_trades parseInt(hour), trades, opts.c1, opts.c2
         callback()
+
+
+  get_chart_data: (opts, callback) -> 
+    client = new Gdax.PublicClient("#{opts.c2}-#{opts.c1}")
+    load_chart_data client, opts, (chart_data) -> 
+      # transform to Poloniex-like format
+      transformed = []
+      for [time, low, high, open, close, volume] in chart_data
+        transformed.push 
+          date: new Date(time).getTime()
+          high: parseFloat high 
+          low: parseFloat low 
+          open: parseFloat open
+          close: parseFloat close
+          volume: parseFloat volume 
+
+      callback(transformed)
+
+  subscribe_to_trade_history: (opts, callback) -> 
+
+    WS = require('ws')
+    wsuri = "wss://ws-feed.gdax.com"
+
+    connection = new WS(wsuri, [], {})
+
+
+    connection.onopen = (e) ->
+
+      connection.keepAliveId = setInterval -> 
+        connection.ping('keepalive')
+      , 30000
+
+      console.log '...engine is now receiving live updates'
+      lag_logger?(99999)
+
+      connection.send JSON.stringify {type: 'subscribe', product_ids: ["#{config.c2}-#{config.c1}"]}
+
+      callback()
+
+    connection.onmessage = (msg) ->
+      if !msg || !msg.data 
+        console.error '...empty data returned by gdax live update', msg 
+        return
+
+      data = JSON.parse(msg.data)
+
+      return if data.type != 'match'
+
+      trade = 
+        rate: parseFloat(data.price)
+        amount: parseFloat(data.size)
+        total: parseFloat(data.price) * parseFloat(data.size)
+        date: new Date(data.time).getTime() / 1000
+
+      opts.new_trade_callback trade 
+
+
+        
+    connection.onclose = (msg) -> 
+      console.log '...lost connection to live feed from exchange',
+        event: msg 
+         
+      setTimeout ->
+        console.log '...trying to reconnect'
+        connection = new WS(wsuri, [], {})
+      , 500
+
+    connection.onerror = (err) ->
+      console.error('error from gdax:', err)    
+
+
 
   get_trade_history: (opts, callback) -> 
     hour = Math.floor (opts.start + 1) / 60 / 60
@@ -262,38 +331,177 @@ module.exports = gdax =
           callback trades
 
 
-  get_chart_data: (opts, callback) -> 
-    client = new Gdax.PublicClient("#{opts.c2}-#{opts.c1}")
-    load_chart_data client, opts, (chart_data) -> 
-      # transform to Poloniex-like format
-      transformed = []
-      for [time, low, high, open, close, volume] in chart_data
-        transformed.push 
-          date: new Date(time).getTime()
-          high: parseFloat high 
-          low: parseFloat low 
-          open: parseFloat open
-          close: parseFloat close
-          volume: parseFloat volume 
+  get_my_fills: (opts, callback) -> 
+    fills = []
 
-      callback(transformed)
+    cb = (data) -> 
+      for fill in (data or []) 
+        fills.push 
+          order_id: fill.order_id 
+          fill_id: fill.trade_id
+          rate: parseFloat fill.price 
+          amount: parseFloat fill.size 
+          total: parseFloat(fill.price) * parseFloat(fill.size)
+          fee: parseFloat(fill.fee)
+          date: new Date(fill.created_at).getTime() / 1000
 
-  subscribe_to_trade_history: (opts, callback) -> 
+      callback fills
 
-  get_your_trade_history: (opts, callback) -> 
+    depaginated_request 'getFills', 
+      product_id: "#{opts.c2}-#{opts.c1}"
+      start: opts.start
+    , cb 
 
-  get_your_open_orders: (opts, callback) -> 
 
-  get_your_balance: (opts, callback) -> 
 
-  get_your_deposit_history: (opts, callback) -> 
+  get_my_open_orders: (opts, callback) -> 
+    open_orders = []
 
-  get_your_exchange_fee: (opts, callback) -> 
+    cb = (data) -> 
+      for order in (data or [])
+        open_orders.push 
+          order_id: order.id 
+          rate: parseFloat order.price 
+          amount: parseFloat order.size 
+          total: parseFloat(order.price) * parseFloat(order.size)
+          date: new Date(order.created_at).getTime() / 1000
+
+      callback open_orders
+
+    depaginated_request 'getOrders', 
+      status: 'open'
+      product_id: "#{opts.c2}-#{opts.c1}"
+    , cb 
+
+
+
+
+  get_my_balance: (opts, callback) -> 
+    client = new Gdax.AuthenticatedClient api_credentials.key, api_credentials.secret, api_credentials.pass
+    
+    cb = (error, response, data) ->
+      if error || !data || data.message
+        console.error {message: "error getting data for #{method}, trying again", error: error, message: data?.message}
+        
+        setTimeout -> 
+          client.getAccounts cb
+        , 50
+      else  
+        balances = {}
+        for balance in data
+          if balance.currency in opts.currencies
+            balances[balance.currency] = 
+              available: balance.available
+              on_order: balance.hold
+
+        outstanding_requests -= 1
+        callback balances
+
+    outstanding_requests += 1
+    client.getAccounts cb
+
+
+  get_my_exchange_fee: (opts, callback) -> 
+    callback 
+      maker_fee: 0
+      taker_fee: 0.0025
+
 
   place_order: (opts, callback) -> 
 
+    queued_request opts.type, 
+      price: opts.rate
+      size: opts.amount
+      product_id: "#{opts.c2}-#{opts.c1}"
+    , (data) -> 
+      callback order_id: data.id 
+
   cancel_order: (opts, callback) -> 
+    queued_request 'cancelOrder', opts.order_id, callback 
+
+  move_order: (opts, callback) ->
+    # GDAX doesn't have an atomic move_order function like Poloniex does
+
+    gdax.cancel_order {order_id: opts.order_id}, -> 
+      console.log 'Done canceling now placing:', opts
+      gdax.place_order
+        type: opts.type
+        rate: opts.rate 
+        amount: opts.amount
+        c1: opts.c1
+        c2: opts.c2
+      , callback
+
+
+queued_request = (method, opts, callback) -> 
+  client = new Gdax.AuthenticatedClient api_credentials.key, api_credentials.secret, api_credentials.pass
+
+  ts = null 
+  cb = (error, response, data) ->
+    if error || !data || data.message
+      console.error "error carrying out #{method}, trying again",
+        error: error
+        message: data?.message
+      
+      setTimeout -> 
+        ts = now()
+        client[method] opts, cb
+      , 50
+    
+    else
+      outstanding_requests -= 1 
+      lag_logger?(now() - ts)
+      callback data
+
+  xecute = -> 
+    if outstanding_requests >= 10
+      setTimeout xecute, 50
+    else 
+      outstanding_requests += 1
+      waiting_to_execute -= 1
+      ts = now()
+
+      console.log 'EXECUTING', method, opts
+      client[method] opts, cb 
+
+  waiting_to_execute += 1
+  xecute()
 
 
 
 
+
+# currently assumes that method returns reverse-chronologically array of objects with a created_at field
+depaginated_request = (method, opts, callback) -> 
+
+  client = new Gdax.AuthenticatedClient api_credentials.key, api_credentials.secret, api_credentials.pass
+
+  all_data = []
+
+  cb = (error, response, data) ->
+    if error || !data || data.message
+      console.error "error getting data for #{method}, trying again", {error: error, message: data?.message}
+      
+      lag_logger?(now() - ts)
+      setTimeout -> 
+        ts = now()
+        client[method] opts, cb
+      , 50
+    
+    else  
+      lag_logger?(now() - ts)
+      all_data = all_data.concat data 
+
+      opts.after = response.headers['cb-after']
+
+      should_continue = (opts.after || opts.after == 0) && (!opts.start || opts.start <= new Date(data[data.length - 1].created_at).getTime() / 1000 )
+
+      if should_continue 
+        client[method] opts, cb 
+      else
+        outstanding_requests -= 1 
+        callback all_data
+
+  outstanding_requests += 1
+  ts = now()
+  client[method] opts, cb 
