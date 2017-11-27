@@ -74,7 +74,7 @@ module.exports.series =
 
 
 
-  ema_price: (v) -> 
+  EMA_price: (v) -> 
     frames: required_frames(v.weight)
 
     evaluate_new_position: (args) -> 
@@ -87,6 +87,7 @@ module.exports.series =
             entry: true 
           series_data: "EMA-#{v.frame_width}"
         pos
+
 
   volume: (v) -> 
     frames: required_frames(v.weight or 1) + 1
@@ -124,6 +125,7 @@ module.exports.series =
 
   price: (v) -> 
     frames: required_frames(v.weight or 1) + 1
+
 
     evaluate_new_position: (args) -> 
       f = args.features
@@ -178,7 +180,67 @@ module.exports.series =
       pos
 
 
+  volatility: (v) -> 
+    frames: 2
 
+    evaluate_new_position: (args) -> 
+      f = args.features 
+      pos = 
+        buy: 
+          rate: f.volume_adjusted_price_stddev()
+          entry: true 
+        series_data: "volatility"
+      pos
+
+  volume_by_volatility: (v) -> 
+    frames: 2
+
+    evaluate_new_position: (args) -> 
+      f = args.features 
+      pos = 
+        buy: 
+          rate: f.stddev_by_volume()
+          entry: true 
+        series_data: "stddev_by_volume"
+      pos
+
+  downward_volatility: (v) -> 
+    frames: 2
+
+    evaluate_new_position: (args) -> 
+      f = args.features 
+      pos = 
+        buy: 
+          rate: f.downwards_volume_adjusted_price_stddev()
+          entry: true 
+        series_data: "down_vol"
+      pos
+
+  upward_volatility: (v) -> 
+    frames: 2
+
+    evaluate_new_position: (args) -> 
+      f = args.features 
+      pos = 
+        buy: 
+          rate: f.upwards_volume_adjusted_price_stddev()
+          entry: true 
+        series_data: "up_vol"
+      pos
+      
+  up_vs_down: (v) -> 
+    frames: required_frames(v.weight or 1) + 1
+
+    evaluate_new_position: (args) -> 
+      f = args.features 
+      pos = 
+        buy: 
+          rate: f.upwards_vs_downwards_stddev {weight: (v.weight or 1)}
+          entry: true 
+        series_data: "upvsdown_vol"
+      pos
+
+          
 
   tug_sell: (v) -> 
     frames: required_frames(Math.min(v.vel_weight, v.accel_weight,.3)) + 2
@@ -238,23 +300,37 @@ module.exports.series =
 
 
 
+  MACD: (v) -> 
+    frames: required_frames(v.weight * 12/26) + 2
+    max_t2: 100
+
+    evaluate_new_position: (args) ->
+      f = args.features
+      MACD = f.MACD {weight: v.weight}
+
+      pos = 
+        buy: 
+          rate: MACD
+          entry: true 
+        series_data: "MACD-#{1/v.weight}-#{v.frame_width}"
+      pos
+
+
 
   RSI: (v) -> 
     frames: required_frames(1 / v.periods) + 8
-    max_t2: 1
+    max_t2: 30
 
     evaluate_new_position: (args) -> 
       f = args.features
-      if Math.random() < .5
+      RSI = f.RSI {weight: 1 / v.periods, t: 0}
 
-        RSI = f.RSI {weight: 1 / v.periods, t: 0}
-
-        pos = 
-          buy: 
-            rate: RSI
-            entry: true 
-          series_data: "RSI-#{v.periods}-#{v.frame_width}"
-        pos
+      pos = 
+        buy: 
+          rate: RSI
+          entry: true 
+        series_data: "RSI-#{v.periods}-#{v.frame_width}"
+      pos
 
 
   RSI_thresh: (v) -> 
@@ -315,13 +391,29 @@ module.exports.series =
         pos
 
 
+  DI_plus_vs_minus: (v) -> 
+    frames: required_frames(v.weight) + 8
+    max_t2: 1
+
+    evaluate_new_position: (args) -> 
+      f = args.features
+
+      m = f.DI_plus({weight: v.weight, t: 0}) - f.DI_minus({weight: v.weight, t: 0})
+
+      pos = 
+        buy: 
+          rate: 200000000 * m
+          entry: true 
+        series_data: "DI_plus-minus-#{100 * v.weight}-#{v.frame_width}"
+      pos
+
   DI_plus: (v) -> 
     frames: required_frames(v.weight) + 8
     max_t2: 1
 
     evaluate_new_position: (args) -> 
       f = args.features
-      if Math.random() < 1
+      if Math.random() < 1  
 
         m = f.DI_plus {weight: v.weight, t: 0}
 
@@ -344,7 +436,7 @@ module.exports.series =
 
         pos = 
           buy: 
-            rate: 200000 * m
+            rate: 200 * m
             entry: true 
           series_data: "DI_minus-#{100 * v.weight}-#{v.frame_width}"
         pos
@@ -355,16 +447,15 @@ module.exports.series =
 
     evaluate_new_position: (args) -> 
       f = args.features
-      if Math.random() < 1
 
-        m = f.DI_plus {weight: v.weight, t: 0}
+      m = f.DM_plus {weight: v.weight, t: 0}
 
-        pos = 
-          buy: 
-            rate: 200000 * m
-            entry: true 
-          series_data: "DM_plus-#{100 * v.weight}-#{v.frame_width}"
-        pos
+      pos = 
+        buy: 
+          rate: 200 * m
+          entry: true 
+        series_data: "DM_plus-#{100 * v.weight}-#{v.frame_width}"
+      pos
 
   DM_minus: (v) -> 
     frames: required_frames(v.weight) + 8
@@ -372,16 +463,15 @@ module.exports.series =
 
     evaluate_new_position: (args) -> 
       f = args.features
-      if Math.random() < 1
 
-        m = f.DM_minus {weight: v.weight, t: 0}
+      m = f.DM_minus {weight: v.weight, t: 0}
 
-        pos = 
-          buy: 
-            rate: 200000 * m
-            entry: true 
-          series_data: "DM_minus-#{100 * v.weight}-#{v.frame_width}"
-        pos
+      pos = 
+        buy: 
+          rate: 200 * m
+          entry: true 
+        series_data: "DM_minus-#{100 * v.weight}-#{v.frame_width}"
+      pos
 
 
 

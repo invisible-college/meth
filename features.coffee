@@ -38,6 +38,8 @@ f = module.exports =
           frames: null
           ticks: 0 
           now: null
+          last: null
+
 
         for name, func of f.features
           engine[name] = initialize_feature engine, name, func
@@ -112,7 +114,9 @@ f = module.exports =
 
         engine.trades_loaded = enough_trades
 
-        engine.now = tick_time 
+        if engine.now != tick_time
+          engine.last = engine.now
+          engine.now = tick_time 
 
 
     engine.reset()
@@ -150,12 +154,14 @@ initialize_feature = (engine, name, func) ->
       len = e.frames.length
 
       if args.t > len - 1
-        console.assert false, {message: "WHA!?", name: name, args: args, frames: len}
+        flengths = (frame.length for frame in e.frames)
+        console.assert false, {message: "WHA!?", name: name, args: args, frames: len, flengths: flengths}
       else 
         val = cache[key] = func e, args
 
     if !(key of next_cache)
       next_cache[key] = val
+
 
     t_.x += Date.now() - xxx if t_?
     val
@@ -288,6 +294,15 @@ default_features =
     else 
       engine.last_price t: args.t + 1
 
+  first_price: (engine, args) -> 
+    args.t ||= 0
+
+    if engine.frames[args.t]?.length > 0 
+      engine.frames[args.t][engine.frames[args.t].length - 1].rate
+    else 
+      engine.last_price t: args.t + 1
+
+
 
   price_stddev: (engine, args) -> 
     rates = []
@@ -299,7 +314,121 @@ default_features =
       Math.standard_dev rates 
     else 
       null 
-    
+
+  volume_adjusted_price_stddev: (engine, args) -> 
+    # https://tabbforum.com/opinions/quantifying-intraday-volatility?print_preview=true&single=true
+    # http://www.itl.nist.gov/div898/software/dataplot/refman2/ch2/weightsd.pdf
+
+    weighted_mean = engine.price {weight: 1, t: args.t, t2: args.t2}
+    weighted_dev = 0
+    observations = 0 
+    total_volume = 0
+
+    for i in [args.t..args.t2] when i < engine.frames.length
+      for trade in (engine.frames[i] or [])
+        observations += 1
+        weighted_dev += trade.amount * (trade.rate - weighted_mean) * (trade.rate - weighted_mean)
+        total_volume += trade.amount 
+
+    if observations > 1 
+      weighted_variance = weighted_dev / ( (observations - 1) * total_volume / observations )
+      weighted_dev = Math.sqrt weighted_variance
+      weighted_dev / weighted_mean  
+    else 
+      null 
+
+  upwards_vs_downwards_stddev: (engine, args) ->
+    up = engine.upwards_volume_adjusted_price_stddev args 
+    down = engine.downwards_volume_adjusted_price_stddev args 
+
+    p = up - down
+    t = args.t or 0 
+    t2 = args.t2 or t
+    weight = args.weight or 1
+
+    should_continue = weight < 1 && check_history_continuation(engine, t, weight)
+    if should_continue
+      p2 = engine.price
+        t: t + 1
+        t2: t2 + 1
+        weight: weight 
+
+      p = Math.weighted_average p, p2, weight 
+
+    p
+
+  upwards_volume_adjusted_price_stddev: (engine, args) -> 
+
+
+    opening_price = engine.first_price args
+
+
+    amount = 0
+    total = 0
+    for i in [args.t..args.t2] when i < engine.frames.length
+      for trade in (engine.frames[i] or []) when trade.rate >= opening_price
+        amount += trade.amount
+        total += trade.total 
+
+    return 0 if amount == 0
+
+    weighted_mean = total / amount
+
+
+    weighted_dev = 0
+    observations = 0 
+    total_volume = 0
+
+    for i in [args.t..args.t2] when i < engine.frames.length
+      for trade in (engine.frames[i] or []) when trade.rate >= opening_price
+        observations += 1
+        weighted_dev += trade.amount * (trade.rate - weighted_mean) * (trade.rate - weighted_mean)
+        total_volume += trade.amount 
+
+    if observations > 1 
+      weighted_variance = weighted_dev / ( (observations - 1) * total_volume / observations )
+      weighted_dev = Math.sqrt weighted_variance
+      weighted_dev / weighted_mean  
+    else 
+      0 
+
+  downwards_volume_adjusted_price_stddev: (engine, args) -> 
+
+    opening_price = engine.first_price args
+
+    amount = 0
+    total = 0
+    for i in [args.t..args.t2] when i < engine.frames.length
+      for trade in (engine.frames[i] or []) when trade.rate <= opening_price
+        amount += trade.amount
+        total += trade.total 
+
+    return 0 if amount == 0
+
+    weighted_mean = total / amount
+
+    weighted_dev = 0
+    observations = 0 
+    total_volume = 0
+
+    for i in [args.t..args.t2] when i < engine.frames.length
+      for trade in (engine.frames[i] or []) when trade.rate <= opening_price
+        observations += 1
+        weighted_dev += trade.amount * (trade.rate - weighted_mean) * (trade.rate - weighted_mean)
+        total_volume += trade.amount 
+
+    if observations > 1
+      weighted_variance = weighted_dev / ( (observations - 1) * total_volume / observations )
+      weighted_dev = Math.sqrt weighted_variance
+      weighted_dev / weighted_mean  
+    else 
+      0 
+
+  stddev_by_volume: (engine, args) -> 
+    volume = engine.volume args 
+    stddev = engine.volume_adjusted_price_stddev args 
+
+    stddev / (volume + 1)
 
   # velocity is derivative of price
   velocity: (engine, args) -> 
@@ -396,7 +525,8 @@ default_features =
 
     # console.log '\n', {RS, RSI, gain, loss}
 
-    alpha = .2
+    # TODO: why the difference between alpha and weight??!?
+    alpha = 1
     should_continue = alpha != 1 && check_history_continuation(engine, args.t, alpha)
     if should_continue
       rsi2 = engine.RSI
@@ -406,77 +536,45 @@ default_features =
 
     RSI
 
-  # plus directional indicator
-  # DI_plus: (engine, args) -> 
-  #   plus = 0 
 
-  #   periods = 1 #Math.ceil(1 / args.weight)
-  #   p = 0
+  MACD_signal: (engine, args) -> 
 
-  #   #for p in [args.t..args.t + periods - 1]
-  #   cur_high = engine.max_price({t: 0})
-  #   prev_high = engine.max_price({t: 1})
-  #   dir_high = cur_high - prev_high
-  #   dir_high = 0 if dir_high < 0 
+    # MACD_line: (12-day EMA - 26-day EMA)
+    # signal_line: 9-day EMA of MACD Line
+    # calculated from MACD function: MACD_histogram = MACD Line - Signal Line
 
-  #   cur_low = engine.min_price({t: p})
-  #   prev_low = engine.min_price({t: p + 1})
-  #   dir_low = prev_low - cur_low
-  #   dir_low = 0 if dir_low < 0 
+    short_weight = args.weight
+    long_weight = args.weight * 12/26
+    MACD_weight = Math.min 1, args.weight * 12/9
 
-  #   plus += dir_high if dir_high > dir_low
+    day12_price = engine.price {t: args.t, weight: short_weight}
+    day26_price = engine.price {t: args.t, weight: long_weight}
 
-  #   #plus /= periods * engine.ATR({t: args.t}) #args)
+    MACD = day12_price - day26_price
 
-  #   # plus /= cur_high
+    should_continue = MACD_weight != 1 && check_history_continuation(engine, args.t, MACD_weight)
+    if should_continue
+      MACD = MACD_weight * MACD + (1 - MACD_weight) * engine.MACD_signal({t: args.t + 1, weight: MACD_weight})
 
-  #   alpha = args.weight
-  #   should_continue = alpha != 1 && check_history_continuation(engine, args.t, alpha)
-  #   if should_continue
-  #     m2 = engine.DI_plus
-  #       t: args.t + 1
-  #       weight: args.weight 
-  #     plus = alpha * plus + (1 - alpha) * m2 #Math.weighted_average plus, m2, alpha 
-  #   plus
+    MACD
 
+  MACD: (engine, args) -> 
+    short_weight = args.weight
+    long_weight = args.weight * 12/26
 
-  # minus directional indicator
-  # DI_minus: (engine, args) -> 
-  #   minus = 0 
+    day12_price = engine.price {t: args.t, weight: short_weight}
+    day26_price = engine.price {t: args.t, weight: long_weight}
 
-  #   periods = 1 #Math.ceil(1 / args.weight)
-  #   p = 0
+    MACD = day12_price - day26_price
+    signal = engine.MACD_signal args 
 
-  #   # for p in [args.t..args.t + periods - 1]
-  #   cur_high = engine.max_price({t: p})
-  #   prev_high = engine.max_price({t: p + 1})
-  #   dir_high = cur_high - prev_high
-  #   dir_high = 0 if dir_high < 0 
+    MACD - signal 
 
-  #   cur_low = engine.min_price({t: p})
-  #   prev_low = engine.min_price({t: p + 1})
-  #   dir_low = prev_low - cur_low
-  #   dir_low = 0 if dir_low < 0 
-
-  #   minus += dir_low if dir_low > dir_high
-
-  #   #minus /= periods * engine.ATR({t: args.t})
-
-  #   #minus /= cur_high
-
-  #   alpha = args.weight
-  #   should_continue = alpha != 1 && check_history_continuation(engine, args.t, alpha)
-  #   if should_continue
-  #     m2 = engine.DI_minus
-  #       t: args.t + 1
-  #       weight: args.weight 
-  #     minus = alpha * minus + (1 - alpha) * m2 # Math.weighted_average minus, m2, alpha 
-  #   minus
 
 
   DI_plus: (engine, args) -> 
     ATR = engine.ATR(args)
-    v = 100 * engine.DM_plus(args)
+    v = 100 * engine.DM_plus({t: args.t})
 
     if v / ATR == Infinity
       v = 0
@@ -493,7 +591,7 @@ default_features =
 
   DI_minus: (engine, args) -> 
     ATR = engine.ATR(args)
-    v = 100 * engine.DM_minus(args)
+    v = 100 * engine.DM_minus({t: args.t})
 
     if v / ATR == Infinity
       v = 0
@@ -524,7 +622,12 @@ default_features =
     dir_low = 0 if dir_low < 0 
 
     v = if dir_high > dir_low && dir_high > 0 then dir_high else 0
-    v
+
+    should_continue = alpha != 1 && check_history_continuation(engine, args.t, alpha)
+    if !should_continue
+      v
+    else 
+      alpha * v + (1 - alpha) * engine.DM_plus({t: args.t + 1, weight: alpha})
 
 
   DM_minus: (engine, args) -> 
@@ -542,7 +645,12 @@ default_features =
     dir_low = 0 if dir_low < 0 
 
     v = if dir_low > dir_high && dir_low > 0 then dir_low else 0 
-    v    
+
+    should_continue = alpha != 1 && check_history_continuation(engine, args.t, alpha)
+    if !should_continue
+      v
+    else 
+      alpha * v + (1 - alpha) * engine.DM_minus({t: args.t + 1, weight: alpha})
 
 
   # average true range
