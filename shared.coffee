@@ -241,15 +241,15 @@ extend Math,
     , 0)
 
   standard_dev:  (values) ->
-    avg = Math.average(values)
-    squareDiffs = values.map((value) ->
-      diff = value - avg
-      sqrDiff = diff * diff
-      sqrDiff
-    )
-    avgSquareDiff = Math.average(squareDiffs)
-    stdDev = Math.sqrt(avgSquareDiff)
-    stdDev
+    avg = Math.average values
+    variance = 0 
+    for val in values 
+      variance += (val - avg) * (val - avg)
+
+    variance /= values.length
+
+    Math.sqrt variance
+
 
   average:  (data) ->
     sum = data.reduce((sum, value) ->

@@ -592,9 +592,11 @@ dom.TIME_SERIES.refresh = ->
   for feature, enabled of @local.enabled_features
     continue if !enabled
 
-    series_dat = cached_positions[feature] or []
-    dates = (p.created * 1000 for p in series_dat)
-    series_dat = (p.entry.rate for p in series_dat)
+    pnts = cached_positions[feature] or []
+    dates = (p.created * 1000 for p in pnts)
+    series_dat = (p.entry.rate for p in pnts)
+
+
 
     axdef = "yaxis#{axis_counter}"
     anchor = "y#{axis_counter}"
@@ -609,6 +611,17 @@ dom.TIME_SERIES.refresh = ->
       hoverinfo: "y+name"
       line: 
         width: 1
+
+    if series_dat[0].exit 
+      data.push 
+        name: feature + 'low'
+        type: 'scattergl'
+        x: dates
+        y: (p.exit.rate for p in pnts)
+        yaxis: anchor
+        hoverinfo: "y+name"
+        line: 
+          width: 1
 
 
     layout[axdef] = 
@@ -707,7 +720,7 @@ dom.TIME_SERIES.refresh = ->
 
 
           if p.entry && p.exit 
-            if Math.abs((p.entry.closed or p.entry.created) - (p.exit.closed or p.exit.created)) > 30 * 60
+            if Math.abs((p.entry.closed or p.entry.created) - (p.exit.closed or p.exit.created)) > 5 * 60
               linesx[p.entry.type].push 1000 * (p.entry.closed or p.entry.created)
               linesy[p.entry.type].push p.entry.rate 
               linesx[p.entry.type].push 1000 * (p.exit.closed or p.exit.created)
@@ -1604,7 +1617,7 @@ dom.ACTIVITY = ->
     rows = []
     for dealer in dealers_in_focus()
 
-      rows = (pos for pos in \
+      rows.push (pos for pos in \
               cached_positions[dealer] when  (!@local.filter_to_incomplete || !pos.closed))
 
     rows = [].concat rows...
@@ -1612,10 +1625,10 @@ dom.ACTIVITY = ->
     for p in rows 
       p.__key ||= "#{p.dealer}-#{p.created}-#{p.closed}"
 
-    rows.sort (a,b) -> (if b.closed then b.closed else b.created) - \
-                       (if a.closed then a.closed else a.created)
+    # rows.sort (a,b) -> (if b.closed then b.closed else b.created) - \
+    #                    (if a.closed then a.closed else a.created)
 
-    # rows.sort (a,b) -> b.created - a.created
+    rows.sort (a,b) -> b.created - a.created
 
     cols = [
 
@@ -1634,6 +1647,11 @@ dom.ACTIVITY = ->
             textAlign: 'right'
           if pos.closed
             readable_duration(pos.closed - pos.created)
+          else 
+            SPAN 
+              style: 
+                opacity: .5
+              readable_duration(time.latest - pos.created)
       ]
       ['Status', (pos) -> 
         if pos.closed
@@ -1656,7 +1674,7 @@ dom.ACTIVITY = ->
         SPAN 
           style: 
             fontFamily: mono
-          if pos.entry then "#{pos.entry.type} #{pos.entry.amount?.toFixed(3)} @ #{pos.entry.rate?.toFixed(5)}" else '?'
+          if pos.entry then "#{pos.entry.type} #{pos.entry.amount?.toFixed(3)} #{if pos.entry.to_fill > 0 && pos.entry.fills.length > 0 then (pos.entry.amount - pos.entry.to_fill).toFixed(3) else ''} @ #{pos.entry.rate?.toFixed(5)}" else '?'
       ]
       ['Exit', (pos) -> if pos.exit?.closed then " #{prettyDate(pos.exit.closed)}" else '-']
       ['', (pos) -> 
@@ -1664,7 +1682,7 @@ dom.ACTIVITY = ->
           style: 
             fontFamily: mono
           if pos.exit 
-            "#{pos.exit.type} #{pos.exit.amount.toFixed(3)} @ #{pos.exit.rate.toFixed(5)}"
+            "#{pos.exit.type} #{pos.exit.amount.toFixed(3)} #{if pos.exit.to_fill > 0 && pos.exit.fills.length > 0 then (pos.exit.amount - pos.exit.to_fill).toFixed(3) else ''} @ #{pos.exit.rate.toFixed(5)}"
       ]
       ['Earnings', (pos) -> 
         if pos.exit then "#{(pos.profit or pos.expected_profit)?.toFixed(3)} (#{(100 * (pos.profit or pos.expected_profit) / pos.exit.amount )?.toFixed(2)}%)" else '?']
@@ -1738,20 +1756,18 @@ dom.BANK = ->
       balance_sum_from_dealers.c2 += balances[dealer].balances.c2
       balance_sum_from_dealers.c1 += balances[dealer].balances.c1
 
-
       balance_sum_from_positions.c2 += balances[dealer].deposits.c2
       balance_sum_from_positions.c1 += balances[dealer].deposits.c1
 
-
-      all_entries = (p.entry for p in positions when p.entry?.closed)
-      all_exits = (p.exit for p in positions when p.exit?.closed) 
+      all_entries = (p.entry for p in positions when p.entry?.fills?.length > 0 )
+      all_exits =   (p.exit  for p in positions when p.exit?.fills?.length > 0 ) 
 
       all_trades = all_entries.concat all_exits
 
       xfee = balances.exchange_fee
       for trade in all_trades
         if trade.type == 'buy'
-          for fill in (trade.fills or [])
+          for fill in trade.fills
             balance_sum_from_positions.c2 += fill.amount
             balance_sum_from_positions.c1 -= fill.total
 
@@ -1761,7 +1777,7 @@ dom.BANK = ->
               balance_sum_from_positions.c1 -= (if fill.fee? then fill.fee else fill.total * xfee)
 
         else 
-          for fill in (trade.fills or [])
+          for fill in trade.fills
             balance_sum_from_positions.c2 -= fill.amount
             balance_sum_from_positions.c1 += fill.total
             balance_sum_from_positions.c1 -= (if fill.fee? then fill.fee else fill.total * xfee)
@@ -1778,6 +1794,7 @@ dom.BANK = ->
         c2_deposit: balances[dealer].deposits.c2
 
 
+    console.log balance_sum_from_positions, balance, total_on_order
     checks = true 
     for currency in currencies
       checks &&= (balance_sum_from_positions[currency] or 0).toFixed(2) == (balance[currency] + total_on_order[currency]).toFixed(2) && \
@@ -1789,9 +1806,6 @@ dom.BANK = ->
       if !checks 
         ['Double check', (currency) -> ((balance_sum_from_positions[currency] or 0) - (balance[currency] + total_on_order[currency])  ).toFixed(2)]
       ['Available', (currency) -> (balance_sum_from_dealers[currency] or 0).toFixed(2)]
-      # if !checks
-      #   ['Double check', (currency) -> ((balance[currency] or 0) - (balance_sum_from_dealers[currency] or 0)).toFixed(2)]
-
       ['Deposited', (currency) -> (deposited[currency] or 0).toFixed(2)]
       ['Change', (currency) -> 
 

@@ -12,7 +12,12 @@ module.exports = exchange =
   # PUBLIC API 
 
   # opts: 
-  #  currency_pair, start, end, period, callback
+  # c1, c2
+  get_earliest_trade: (opts) ->
+    exchange[config.exchange].get_earliest_trade opts
+
+  # opts: 
+  #  c1, c2, start, end, period, callback
   get_chart_data: (opts, callback) -> 
     exchange[config.exchange].get_chart_data opts, callback
 

@@ -573,54 +573,6 @@ strats.ADX_cross = (v) ->
       return pos 
 
 
-strats.RSIxDM = (v) ->  
-
-  fast_alpha = v.fast_alpha
-  slow_alpha = v.slow_alpha
-    
-  name: 'RSIxDM'
-
-  frames: v.slow_periods + 2 #required_frames(slow_alpha) + 2
-  max_t2: 1
-
-  evaluate_new_position: (args) ->
-    f = args.features
-    open = args.open_positions
-
-    DI_plus = f.DI_plus {weight: slow_alpha, t: 0}
-    DI_minus = f.DI_minus {weight: slow_alpha, t: 0}
-
-    prev_DI_plus = f.DI_plus {weight: slow_alpha, t: 1}
-    prev_DI_minus = f.DI_minus {weight: slow_alpha, t: 1}
-
-    RSI = f.RSI {weight: fast_alpha, t: 0}
-
-    RSI_is_high = RSI > 100 - v.RSI_thresh 
-    RSI_is_low = RSI < v.RSI_thresh
-
-    DI_crossed_low = DI_plus < DI_minus && prev_DI_plus > prev_DI_minus     
-    DI_crossed_up =   DI_plus > DI_minus && prev_DI_plus < prev_DI_minus 
-
-    action = null 
-
-    # let's buy into this emerging up trend!
-    if DI_crossed_up && RSI_is_high
-      action = 'buy'
-
-    # let's sell into this emerging down trend!
-    else if DI_crossed_low && RSI_is_low 
-      action = 'sell'
-
-    if action && (!v.clear_signal || open.length == 0 || open[open.length - 1].entry.type != action || open.length == 1 || open[open.length - 2].entry.type != action)
-      pos = {}
-      pos[action] = 
-        entry: true
-        rate: f.last_price()
-        amount: get_amount(args)
-      return pos 
-
-
-
 strats.DM_crossover = (v) ->  
 
   alpha = v.weight 
@@ -633,34 +585,42 @@ strats.DM_crossover = (v) ->
 
   evaluate_new_position: (args) ->
     f = args.features
-    open = args.open_positions
 
-    DI_plus = f.DI_plus {weight: alpha, t: 0}
-    DI_minus = f.DI_minus {weight: alpha, t: 0}
+    cur = f.DM_plus({weight: alpha, t: 0}) - f.DM_minus({weight: alpha, t: 0})
 
-    prev_DI_plus = f.DI_plus {weight: alpha, t: 1}
-    prev_DI_minus = f.DI_minus {weight: alpha, t: 1}
+    ```
+    key = `${f.last}-${f.last}-${alpha}-`
+    ```
 
-    DI_crossed_low = DI_plus < DI_minus && prev_DI_plus > prev_DI_minus     
-    DI_crossed_up =   DI_plus > DI_minus && prev_DI_plus < prev_DI_minus 
+    return if !f.cache.DM_plus[key]? || !f.cache.DM_minus[key]?
+
+    prev  = f.cache.DM_plus[key] - f.cache.DM_minus[key]
+
+    bear_cross  =  (cur > 0 && prev <= 0) || (cur == prev == 0 && 'buy'  in (p.entry.type for p in args.open_positions))
+    bull_cross  =  (cur > 0 && prev <= 0) || (cur == prev == 0 && 'sell' in (p.entry.type for p in args.open_positions))
 
     action = null 
 
     # let's buy into this emerging up trend!
-    if DI_crossed_up # && RSI_is_high
+    if bull_cross # && RSI_is_high
       action = 'buy'
 
     # let's sell into this emerging down trend!
-    else if DI_crossed_low # && RSI_is_low 
+    else if bear_cross # && RSI_is_low 
       action = 'sell'
 
-    if action && (!v.clear_signal || open.length == 0 || open[open.length - 1].entry.type != action || open.length == 1 || open[open.length - 2].entry.type != action)
+    if action && action not in (p.entry.type for p in args.open_positions)
+      last = f.last_price()
       pos = {}
       pos[action] = 
         entry: true
-        rate: f.last_price()
-        amount: get_amount(args)
+        rate: last
+        amount: if action == 'buy' then .4 * args.balance[args.dealer].balances.c1 / last else .4 * args.balance[args.dealer].balances.c2
+        market: true
+
       return pos 
+
+  evaluate_open_position: (args) -> null
 
 
 

@@ -12,9 +12,9 @@ module.exports = history =
     fs.mkdirSync "price_data/#{config.exchange}" if !fs.existsSync("price_data/#{config.exchange}")
 
     proceed = true 
-    cb_empty = -> 
+    cb_empty = (interval) -> 
       if callback_empty
-        callback_empty()
+        callback_empty(interval)
         proceed = false
 
     done = -> 
@@ -43,12 +43,12 @@ module.exports = history =
         if config.accounting_currency not in [config.c1, config.c2]
           history.load_chart_history "c1", config.accounting_currency, config.c1, start, end, -> 
             return if !proceed
-            history.load_chart_history "c2", config.accounting_currency, config.c2, start, end, done, cb_empty
-          , cb_empty
+            history.load_chart_history "c2", config.accounting_currency, config.c2, start, end, done, if callback_empty then cb_empty
+          , if callback_empty then cb_empty
         else 
           done()
 
-      , cb_empty
+      , if callback_empty then cb_empty
 
     load_history()
 
@@ -60,6 +60,7 @@ module.exports = history =
 
     fname = "price_data/#{config.exchange}/#{c1}-#{c2}-#{start}-#{end}-#{period}"
 
+    attempts = 0 
     store_chart = (price_history) ->
       price_data[name] = price_history
       bus.save price_data
@@ -98,14 +99,21 @@ module.exports = history =
                 first_entry: price_history[0]
                 last_entry: price_history[price_history.length - 1]
 
-            else 
-              console.log price_history 
-              if callback_empty
-                callback_empty()
+              if callback_empty?
+                callback_empty({start: price_history[0].date, end: price_history[price_history.length - 1].date + period})
                 cb()
+                console.log 'not retrying.'
                 return
+
+            else if callback_empty?
+              callback_empty()
+              cb()
+              console.log 'not retrying.'
+              return
+
             console.log "Trying again."
-            load_chart()
+            attempts += 1
+            setTimeout load_chart, attempts * 100
 
           else 
             if !fs.existsSync fname 

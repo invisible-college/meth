@@ -181,14 +181,14 @@ simulate = (ts, callback) ->
     # Find trades that we care about this tick. history.trades is sorted newest first
     #zzz = Date.now()    
     while start_idx >= 0
-      if history.trades[start_idx].date > start 
+      if history.trades[start_idx].date > start || start_idx < 0
         start_idx += 1
         break 
 
       start_idx -= 1
 
     while end_idx >= 0 
-      if history.trades[end_idx].date > tick.time 
+      if history.trades[end_idx].date > tick.time  || end_idx < 0 
         end_idx += 1 
         break
       end_idx -= 1
@@ -199,7 +199,6 @@ simulate = (ts, callback) ->
 
 
     simulation_done = tick.time > ts - config.tick_interval * 10
-
 
     ######################
     #### Accounting
@@ -337,20 +336,21 @@ update_balance = (balance, dealers_with_open) ->
 
     if config.enforce_balance && (dbalance.balances.c1 < 0 || dbalance.balances.c2 < 0)
 
-      msg =         
+      msg =
         message: 'negative balance!?!'
         balance: balance.balances
         dbalance: balance[dealer]
         positions: from_cache(dealer).positions
         dealer: dealer
 
+      console.log ''
       for pos in from_cache(dealer).positions 
         for t in [pos.entry, pos.exit] when t 
-          msg["#{pos.created}-#{t.type}"] = t
+          # msg["#{pos.created}-#{t.type}"] = t
           amt = 0 
           tot = 0 
           for f,idx in (t.fills or [])
-            msg["#{pos.created}-#{t.type}-f#{idx}"] = f
+            # msg["#{pos.created}-#{t.type}-f#{idx}"] = f
             amt += f.amount 
             tot += f.total 
 
@@ -359,6 +359,9 @@ update_balance = (balance, dealers_with_open) ->
             amt: amt
             tot: tot 
             fills: (t.fills or []).length
+            closed: t.closed
+
+          console.log t
 
       console.assert false, msg
 
@@ -368,6 +371,7 @@ update_balance = (balance, dealers_with_open) ->
   balance.on_order.c1 = btc_on_order
   balance.on_order.c2 = eth_on_order
 
+  
 
 global.trades_closed = {}
 
@@ -435,6 +439,8 @@ update_position_status = (end_idx, balance, dealers_with_open) ->
           trade.closed = if trade.force_canceled then tick.time else trade.fills[trade.fills.length - 1].date
           global.position_status[key] = undefined
 
+
+
       if (pos.entry?.closed && pos.exit?.closed) || (dealers[dealer].never_exits && pos.entry?.closed)
         pos.closed = Math.max pos.entry.closed, (pos.exit?.closed or 0)
         closed.push pos 
@@ -449,32 +455,49 @@ update_position_status = (end_idx, balance, dealers_with_open) ->
       cur_c2 = balance.accounted_for.c2
 
       for trade in [pos.entry, pos.exit] when trade
-        if !trade.total 
-          total = 0 
-          for fill in trade.fills 
-            total += fill.total 
-          trade.total = total 
+        amount = 0
+        total = 0 
+        for fill in trade.fills 
+          total += fill.total 
+          amount += fill.amount 
+
+        trade.total = total 
+        trade.amount = amount 
 
         if trade.type == 'buy'
 
           balance.accounted_for.c2 += trade.amount 
-          balance.accounted_for.c2 -= trade.amount * balance.exchange_fee
           balance.accounted_for.c1 -= trade.total
 
           balance[name].accounted_for.c2 += trade.amount 
-          balance[name].accounted_for.c2 -= trade.amount * balance.exchange_fee
           balance[name].accounted_for.c1 -= trade.total
+
+          if config.exchange == 'poloniex'
+            balance[name].accounted_for.c2 -= trade.amount * balance.exchange_fee
+            balance.accounted_for.c2       -= trade.amount * balance.exchange_fee
+          else 
+            balance.accounted_for.c1       -= trade.total * balance.exchange_fee
+            balance[name].accounted_for.c1 -= trade.total * balance.exchange_fee
+
 
         else
           balance.accounted_for.c2 -= trade.amount 
           balance.accounted_for.c1 += trade.total 
-          balance.accounted_for.c1 -= trade.total * balance.exchange_fee
 
           balance[name].accounted_for.c2 -= trade.amount 
           balance[name].accounted_for.c1 += trade.total 
+
+          balance.accounted_for.c1       -= trade.total * balance.exchange_fee
           balance[name].accounted_for.c1 -= trade.total * balance.exchange_fee
 
+
+        # original = trade.rate
+        trade.rate = trade.total / trade.amount
+
+
+
       delete pos.expected_profit
+
       pos.profit = (balance.accounted_for.c1 - cur_c1) / pos.exit.rate + (balance.accounted_for.c2 - cur_c2) 
 
 
@@ -489,6 +512,7 @@ fill_order = (my_trade, end_idx, status) ->
   is_sell = my_trade.type == 'sell'
   my_created = my_trade.created 
   trade_lag = config.trade_lag  
+  is_market = my_trade.market
 
   if status.idx
     start_at = status.idx
@@ -511,14 +535,13 @@ fill_order = (my_trade, end_idx, status) ->
         init = true 
 
     if (!is_sell && trade.rate <= my_rate) || \
-       ( is_sell && trade.rate >= my_rate)
+       ( is_sell && trade.rate >= my_rate) || is_market
 
       fill = 
         date: trade.date 
-        rate: my_rate 
+        rate: if is_market then trade.rate else my_rate 
         amount: trade.amount
 
-      # console.log fill
       fills.push fill
 
       if trade.amount >= to_fill
@@ -526,6 +549,7 @@ fill_order = (my_trade, end_idx, status) ->
         return status
       else 
         to_fill -= fill.amount
+
 
     if trade.date > history.trades[end_idx].date + 30 * 60
       status.idx = idx 
@@ -636,43 +660,39 @@ log_results = ->
     console.log 'Exporting analysis'
     store_analysis()
 
-  return if !config.log_results
-
-  # analysis of positions
-  fs = require('fs')
-  if !fs.existsSync('logs') 
-    fs.mkdirSync 'logs'  
-
-  fname = "logs/#{config.log_results}.txt"
-
   KPI (all_stats) -> 
-    if !fs.existsSync(fname)
-      cols = ['Name', 'Currency1', 'Currency2', 'Exchange', 'Start', 'End']
-
-      for measure, __ of dealer_measures(all_stats)
-        cols.push measure
-    else 
-      cols = []
-
-    rows = [cols]
 
     row = [config.name, config.c1, config.c2, config.exchange, config.end - config.simulation_width, config.end]
 
     for measure, calc of dealer_measures(all_stats)
       row.push calc('all')
 
-    rows.push row
+    console.log '\x1b[36m%s\x1b[0m', "#{row[0]} made #{row[10]} profit on #{row[11]} completed trades at #{row[6]} CAGR"
+
+    if config.log_results
+
+      fs = require('fs')
+      if !fs.existsSync('logs') 
+        fs.mkdirSync 'logs'  
+
+      fname = "logs/#{config.log_results}.txt"
+
+      if !fs.existsSync(fname)
+        cols = ['Name', 'Currency1', 'Currency2', 'Exchange', 'Start', 'End']
+
+        for measure, __ of dealer_measures(all_stats)
+          cols.push measure
+      else 
+        cols = []
+
+      rows = [cols]
 
 
-    console.log (r.join('\t') for r in rows).join('\n')
-    # out = fs.createWriteStream fname, {flags:'a'}
-    # out.write (r.join('\t') for r in rows).join('\n')
-    # out.end()
+      rows.push row
 
-
-    out = fs.openSync fname, 'a'
-    fs.writeSync out, (r.join('\t') for r in rows).join('\n')
-    fs.closeSync out
+      out = fs.openSync fname, 'a'
+      fs.writeSync out, (r.join('\t') for r in rows).join('\n')
+      fs.closeSync out
 
 
 reset = -> 
@@ -693,21 +713,47 @@ reset = ->
 
 lab = module.exports = 
 
-  experiment_multiple_times: (conf, times, callback) -> 
-    next = ->
-      if times.length == 0 
-        callback?()
-      else 
-        time = times.pop()
-                
-        conf.simulation_width = time.simulation_width
-        conf.end = time.end 
-        conf.name = time.name 
-        conf.multiple_times = true
+  experiment_multiple_times: (conf, callback) -> 
+    conf.auto_shorten_time = false 
+    conf.multiple_times = true
 
-        console.log "***********"
-        console.log "Next experiment! (#{times.length} more remaining)"
-        lab.experiment conf, next
+    conf.stop ?= Math.floor Date.now() / 1000
+
+    runs = []
+
+    end = conf.stop
+    length = conf.length
+    while end - length >= conf.begin
+
+      runs.push 
+        end: end
+        simulation_width: length
+        name: "#{((now() - end) / (7 * 24 * 60 * 60)).toFixed(0)} weeks ago #{conf.exchange} #{conf.c1}x#{conf.c2}"
+
+      end -= conf.offset
+
+    next = ->
+      if runs.length == 0 
+        callback?()
+        process.exit()
+      else 
+        time = runs.pop()
+        
+        extend conf, time
+        
+        already_run = false 
+
+        fname = "logs/#{conf.log_results or config.log_results}.txt"        
+        if fs.existsSync(fname)
+          from_file = fs.readFileSync(fname, 'utf8')
+          already_run = from_file.indexOf(conf.name) > -1
+
+        if already_run
+          console.log "Skipping because it has already run: #{time.name}"
+          next()
+        else 
+          console.log "\n********\nNext experiment! #{time.name}\n#{runs.length} remaining after this.\n\n"
+          lab.experiment conf, next
 
     next()
 
@@ -732,12 +778,12 @@ lab = module.exports =
       checks_per_frame: 2
       produce_heapdump: false
       offline: false
+      auto_shorten_time: true
     save config 
 
     # set globals
     global.position_status = {}
 
-    console.log "Prepping the lab to run #{Object.keys(dealers).length} dealers" if config.log
 
     ts = config.end or now()
 
@@ -748,18 +794,33 @@ lab = module.exports =
     console.assert !isNaN(history.longest_requested_history), 
       message: 'Longest requested history is NaN. Perhaps you haven\'t registered any dealers'
 
-
     # console.log 'longest requested history:', history.longest_requested_history
     history_width = history.longest_requested_history + config.simulation_width + 24 * 60 * 60
 
+    earliest_trade_for_pair = exchange.get_earliest_trade {c1: config.c1, c2: config.c2}
 
-    history.load_price_data ts - history_width, ts, ->
-      console.log "...loading #{ (history_width / 60 / 60 / 24).toFixed(2) } days of trade history, relative to #{ts}" if config.log
-      history.load ts - history_width, ts, -> 
-        console.log "...experimenting!" if config.log
-        simulate ts, callback
+    if ts > earliest_trade_for_pair
+      if config.auto_shorten_time && ts - history_width < earliest_trade_for_pair
+        shrink_by = earliest_trade_for_pair - (ts - history_width) + 24 * 60 * 60
+        config.simulation_width -= shrink_by
+        history_width = history.longest_requested_history + config.simulation_width + 24 * 60 * 60
+        console.log "Shortened simulation", {shrink_by, end: ts, start: ts - history_width, history_width, earliest_trade_for_pair}
 
 
+      if ts - history_width >= earliest_trade_for_pair        
+        console.log "Running #{Object.keys(dealers).length} dealers" if config.log
+
+        history.load_price_data ts - history_width, ts, ->
+          console.log "...loading #{ (history_width / 60 / 60 / 24).toFixed(2) } days of trade history, relative to #{ts}" if config.log
+          history.load ts - history_width, ts, -> 
+            console.log "...experimenting!" if config.log
+            simulate ts, callback
+      else 
+        console.log "Can't experiment during that time. The currency pair wasn't trading before the start date."
+        callback()
+    else 
+      console.log "Can't experiment during that time. The currency pair wasn't trading before the end date."
+      callback()
 
   setup: ({persist, port, db_name, clear_old, no_client}) -> 
     global.pointerify = true

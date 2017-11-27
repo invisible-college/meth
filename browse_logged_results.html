@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html>
+<head>
+<script type="statebus">
+
+  bus.honk = false
+
+  dom.BODY = ->
+
+    DIV 
+      style: 
+        minHeight: window.innerHeight
+        padding: 0
+        margin: 0
+        minWidth: 1400
+        backgroundColor: 'black'
+        #width: '100%'
+        color: 'white'
+
+      LOAD_LOG()
+
+      PLOT()
+
+
+  dom.PLOT = -> 
+    all_data = fetch 'data'
+    return DIV null if !all_data.rows
+
+    settings = fetch('plot_settings')
+
+    if !settings.metric
+      settings.metric = 'Profit'
+
+    DIV 
+      style: 
+        position: 'relative'
+
+
+      DIV 
+        style: 
+          display: 'inline-block'
+          paddingRight: 20
+          verticalAlign: 'top'
+
+        INPUT 
+          id: 'cumulative'
+          type: 'checkbox'
+          value: settings.cumulative
+          onChange: (e) -> 
+            settings.cumulative = e.target.checked
+            save settings
+
+        LABEL 
+          htmlFor: 'cumulative'
+          'cumulative'
+
+        BR null
+
+        SELECT
+          value: settings.metric
+          onChange: (e) -> 
+            settings.metric = e.target.value
+            save settings
+
+          for metric in Object.keys(all_data.columns) when metric not in ['Start', 'End', 'Name', 'Currency1', 'Currency2', 'Exchange', 'series']
+            OPTION 
+              value: metric
+              metric
+      DIV 
+        style: 
+          display: 'inline-block'
+          paddingRight: 20
+          verticalAlign: 'top'
+
+        "Currency 1 to exclude"
+
+        for c1 in Object.keys(uniq(all_data.columns.Currency1))
+          do (c1) ->
+            DIV null, 
+              INPUT 
+                id: "exclude_c1_#{c1}"
+                type: 'checkbox'
+                value: settings["exclude_c1_#{c1}"]
+                onChange: (e) -> 
+                  settings["exclude_c1_#{c1}"] = e.target.checked
+                  save settings
+
+              LABEL 
+                htmlFor: "exclude_c1_#{c1}"
+                c1
+
+      DIV 
+        style: 
+          display: 'inline-block'
+          paddingRight: 20
+          verticalAlign: 'top'
+        "Currency 2 to exclude"
+
+        for c2 in Object.keys(uniq(all_data.columns.Currency2))
+          do (c2) -> 
+            DIV null, 
+              INPUT 
+                id: "exclude_c2_#{c2}"
+                type: 'checkbox'
+                value: settings["exclude_c2_#{c2}"]
+                onChange: (e) -> 
+                  settings["exclude_c2_#{c2}"] = e.target.checked
+                  save settings
+
+              LABEL 
+                htmlFor: "exclude_c2_#{c2}"
+                c2
+
+      DIV 
+        style: 
+          display: 'inline-block'
+          paddingRight: 20
+          verticalAlign: 'top'
+
+        "Exchanges to exclude"
+
+        for exchange in Object.keys(uniq(all_data.columns.Exchange))
+          do (exchange) -> 
+            DIV null, 
+              INPUT 
+                id: "exclude_exchange_#{exchange}"
+                type: 'checkbox'
+                value: settings["exclude_exchange_#{exchange}"]
+                onChange: (e) -> 
+                  settings["exclude_exchange_#{exchange}"] = e.target.checked
+                  save settings
+
+              LABEL 
+                htmlFor: "exclude_exchange_#{exchange}"
+                exchange
+
+
+      DIV
+        ref: 'plotly'
+        style: 
+          position: 'relative'
+
+  dom.PLOT.refresh = ->
+    all_data = fetch 'data'
+    return if !all_data.rows
+
+    settings = fetch('plot_settings')
+    cumulative = settings.cumulative
+    data = []
+
+    for series, data_idx of uniq(all_data.columns.series)
+      [c1,c2,exchange] = series.split('-')
+
+      if settings["exclude_exchange_#{exchange}"] || settings["exclude_c1_#{c1}"] || settings["exclude_c2_#{c2}"]
+        continue
+
+      vals = (s for s,idx in all_data.columns[settings.metric] when idx in data_idx)
+      if cumulative 
+        if settings.metric in ['Profit', 'Profit*', 'Score*', 'Completed']
+          for val,idx in vals when idx > 0
+            vals[idx] = vals[idx - 1] + vals[idx]
+        else if settings.metric == 'Success'
+          new_vals = []
+          completed = (s for s,idx in all_data.columns.Completed when idx in data_idx)
+          successful = (s * all_data.columns.Completed[idx] for s,idx in all_data.columns.Success when idx in data_idx)
+
+          for val,idx in completed when idx > 0
+            completed[idx] = completed[idx - 1] + completed[idx]
+
+          for val,idx in successful when idx > 0
+            successful[idx] = successful[idx - 1] + successful[idx]
+
+          for val,idx in vals when idx > 0 
+            vals[idx] = successful[idx] / completed[idx]          
+
+        else 
+          new_vals = []
+          for val,idx in vals when idx > 0
+            my_vals = vals.slice(0, idx + 1)
+            new_vals.push Math.average(my_vals)
+          for val,idx in vals when idx > 0 
+            vals[idx] = new_vals[idx]
+
+
+      data.push 
+        name: series.replace('USDT', 'USD')
+        type: 'scattergl'
+        mode: 'lines'
+        x: (s for s,idx in all_data.columns.Start when idx in data_idx)
+        y: vals
+        #yaxis: anchor
+        hoverinfo: "y+name"
+        line: 
+          width: 1
+
+    data.sort (a,b) -> 
+      a.name.localeCompare(b.name)
+
+    all = {}
+    for d in data 
+      for x,idx in d.x 
+        all[x] ||= [] 
+        all[x].push d.y[idx]
+
+    if settings.metric in ['Profit', 'Profit*', 'Score*', 'Completed']
+      for x,y of all 
+        all[x] =  Math.summation(y)
+    else 
+      for x,y of all 
+        all[x] =  Math.average(y)
+
+
+    all = ([x,y] for x,y of all)
+    all.sort (a,b) -> a[0] - b[0]
+
+
+    data.unshift 
+      name: 'ALL'
+      type: 'scattergl'
+      mode: 'markers+lines'
+      x: (a[0] for a in all)
+      y: (a[1] for a in all)
+      #yaxis: anchor
+      hoverinfo: "y+name"
+      line: 
+        width: 1
+
+
+    layout =  
+      dragmode: 'zoom'
+      margin:
+        r: 10
+        t: 25
+        b: 40
+        l: 60
+        pad: 0
+      showlegend: true
+
+      height: 700
+      paper_bgcolor: 'rgba(0,0,0,0)'
+      plot_bgcolor: 'rgba(0,0,0,0)'
+      font:
+        size: 12
+        color: '#888'
+
+      yaxis: 
+        range: if settings.metric in ['Success', 'Not reset', 'Done in day', 'within hour'] then [0, 100] else if settings.metric in ['CAGR'] then [-200,200]
+
+
+      xaxis: 
+        gridcolor: '#333'
+        showgrid: false
+        zeroline: true
+        rangeslider:  {}
+        type: 'date'
+
+    try 
+      Plotly.purge(@refs.plotly.getDOMNode())
+    catch e 
+      console.log "Couldn't delete plotly trace before plotting"
+
+    Plotly.plot(@refs.plotly.getDOMNode(), data, layout)
+
+  dom.LOAD_LOG = -> 
+    all_data = fetch('data')
+
+    DIV null,
+
+      FORM 
+        enctype: "multipart/form-data"
+
+        INPUT 
+          ref: 'upload'
+          type: 'file'
+          accept: "text/txt"
+          name: "files[]"
+
+          onChange: (evt) -> 
+            document.title = evt.target.value.split('\\').pop().split('.')[0]
+
+            files = evt.target.files
+            f = files[0]
+            reader = new FileReader()
+              
+            reader.onload = (e) -> 
+              srows = e.target.result.split('\n')
+              rows = []
+
+              if srows[0].startsWith('<style>')
+                srows.shift()
+
+              for row in srows
+                rows.push row.split('\t')
+
+              header = rows.shift()
+
+              data = {}
+              sort_idx = null
+              for h,idx in header 
+                data[h] = []
+                if h == 'Start'
+                  sort_idx = idx
+
+              data.series = []
+
+              rows.sort (a,b) ->
+                parseInt(a[sort_idx]) - parseInt(b[sort_idx])
+
+              nrows = []
+              for row in rows
+                nrow = []
+                for cell,idx in row
+                  field = header[idx]
+                  if field.indexOf('Currency') > -1 || field in ['Exchange', 'Name']
+                    val = cell
+                  else if field in ['Start', 'End']
+                    val = parseInt(cell) * 1000
+                  else
+                    val = parseFloat(cell.replace('$','').replace('%',''))
+
+                  data[field].push val 
+                  nrow.push val
+
+                series = "#{data.Currency1[data.Currency1.length-1]}-#{data.Currency2[data.Currency2.length-1]}-#{data.Exchange[data.Exchange.length-1]}"
+                nrow.unshift series
+                data.series.push series
+                nrows.push nrow
+
+              header.unshift 'series'
+
+              all_data.rows = nrows 
+              all_data.header = header 
+              all_data.columns = data 
+
+              save all_data
+
+            reader.readAsText(f)
+
+
+  uniq = (ar) -> 
+    ops = {}
+    for e,idx in ar
+      key = e.key or (if e.constructor == String then e else JSON.stringify(e))
+      ops[key] ||= []
+      ops[key].push idx 
+    ops
+
+  extend = (obj) ->
+    obj ||= {}
+    for arg, idx in arguments 
+      if idx > 0
+        for own name,s of arg
+          if !obj[name]? || obj[name] != s
+            obj[name] = s
+    obj
+
+  extend Math, 
+
+    summation:  (data) -> 
+      data.reduce((sum, value) ->
+        sum + value
+      , 0)
+
+    standard_dev:  (values) ->
+      avg = Math.average(values)
+      squareDiffs = values.map((value) ->
+        diff = value - avg
+        sqrDiff = diff * diff
+        sqrDiff
+      )
+      avgSquareDiff = Math.average(squareDiffs)
+      stdDev = Math.sqrt(avgSquareDiff)
+      stdDev
+
+    average:  (data) ->
+      sum = data.reduce((sum, value) ->
+        sum + value
+      , 0)
+      avg = sum / data.length
+      avg
+
+    median:  (values, already_sorted) -> 
+      if !already_sorted
+        values.sort (a, b) ->
+          a - b
+      half = Math.floor(values.length / 2)
+      if values.length % 2
+        values[half]
+      else
+        (values[half - 1] + values[half]) / 2.0
+
+</script><script src="https://stateb.us/client6.js"></script>
+<script src="vendor/md5.js"></script>
+<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+</head>
+<body>
+</body>
+</html>

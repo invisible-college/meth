@@ -237,9 +237,27 @@ module.exports = gdax =
           write_trades parseInt(hour), trades, opts.c1, opts.c2
         callback()
 
+  get_earliest_trade: (opts) ->
+
+    pair = "#{opts.c2}-#{opts.c1}"
+
+    earliest_trades = 
+      "BTC-USD": 1417375595
+      "ETH-USD": 1463512661
+      "LTC-USD": 1471374970 
+      "ETH-BTC": 1463512661
+      "LTC-BTC": 1471374970
+
+
+    console.assert earliest_trades[pair],
+      msg: "earliest trade for #{pair} on not listed in GDAX's get_earliest_trade method" 
+
+    return earliest_trades[pair]
+
 
   get_chart_data: (opts, callback) -> 
     client = new Gdax.PublicClient("#{opts.c2}-#{opts.c1}")
+    opts.start = opts.start - 10000
     load_chart_data client, opts, (chart_data) -> 
       # transform to Poloniex-like format
       transformed = []

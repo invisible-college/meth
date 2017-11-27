@@ -8,6 +8,9 @@ global.feature_engines = {}
 global.open_positions = {}
 
 
+
+
+
 learn_strategy = (name, teacher, strat_dealers) -> 
 
   console.assert uniq(strat_dealers), {message: 'dealers aren\'t unique!', dealers: strat_dealers}
@@ -120,6 +123,7 @@ init = ({history, clear_all_positions, take_position, cancel_unfilled, update_ex
     engine = feature_engines[frame_width]
     engine.num_frames = Math.max dealer_data.frames, (engine.num_frames or 0)
     engine.max_t2 = Math.max (dealer_data.max_t2 or 0), (engine.max_t2 or 0)
+
     engine.checks_per_frame = Math.max (dealer_data.settings?.checks_per_frame or 0), (engine.checks_per_frame or config.checks_per_frame)
 
     dealers[name]?.feature_engine = engine
@@ -214,20 +218,34 @@ find_opportunities = (trade_history, exchange_fee, balance) ->
           if valid
             
 
-            # if false && !position.series_data && settings.never_exits
-            #   for pos, idx in open_positions[name] when !pos.exit 
-            #     if pos.entry.amount == position.entry.amount && pos.entry.type != position.entry.type
+            if !position.series_data && settings.never_exits
+              candidates = (p for p in open_positions[name] when !p.exit && p.entry.type != position.entry.type)
 
-            #       opportunities.push
-            #         pos: pos
-            #         action: 'exit'
-            #         rate: position.entry.rate
-            #         required_c2: if pos.entry.type == 'buy' then pos.entry.amount
-            #         required_c1: if pos.entry.type == 'sell' then pos.entry.amount * position.entry.rate
+              if candidates.length > 1
+                candidates.sort( (a,b) -> b.created - a.created )
 
-            #       # open_positions[name].splice idx, 1  
-            #       found_match = true 
-            #       break
+              pos = candidates.pop()
+
+              if pos 
+                rate = position.entry.rate
+                amount = position.entry.amount or pos.entry.amount
+                total_available = if position.entry.type == 'buy' 
+                                    balance[pos.dealer].balances.c1 / rate
+                                  else 
+                                    balance[pos.dealer].balances.c2
+
+                amount = Math.min amount, total_available
+
+                opportunities.push
+                  pos: pos
+                  action: 'exit'
+                  rate: rate
+                  amount: amount
+                  required_c2: if position.entry.type == 'sell' then amount
+                  required_c1: if position.entry.type == 'buy'  then amount * rate
+                  market: if pos.entry.market then true 
+
+                found_match = pos 
 
             # if settings.merge_positions && !position.series_data
             #   for pos, idx in open_positions[name] when pos.exit && pos.entry.closed && !pos.exit.closed && \
@@ -265,6 +283,7 @@ find_opportunities = (trade_history, exchange_fee, balance) ->
       yyy = Date.now()      
 
       eval_open = global.dealers[name].evaluate_open_position
+
       for pos in open_positions[name] when !pos.series_data && found_match != pos
         opportunity = eval_open
           position: pos 
@@ -276,9 +295,9 @@ find_opportunities = (trade_history, exchange_fee, balance) ->
         if opportunity
           if opportunity.action == 'exit'
             if pos.entry.type == 'buy'
-              opportunity.required_c2 = pos.entry.amount
+              opportunity.required_c2 = opportunity.amount or pos.entry.amount
             else 
-              opportunity.required_c1 = pos.entry.amount * opportunity.rate
+              opportunity.required_c1 = (opportunity.amount or pos.entry.amount) * opportunity.rate
 
           opportunity.pos = pos 
           opportunities.push opportunity
@@ -318,7 +337,7 @@ execute_opportunities = (opportunities, exchange_fee, balance) ->
         force_cancel pos
 
       when 'exit'
-        exit_position pos, opportunity.rate, exchange_fee
+        exit_position {pos, rate: opportunity.rate, exchange_fee, market_trade: opportunity.market, amount: opportunity.amount or pos.entry.amount}
         take_position pos
 
       when 'update_exit'
@@ -356,7 +375,8 @@ check_wallet = (opportunities, balance) ->
     avail_BTC = dbalance.c1
     avail_ETH = dbalance.c2
 
-    console.assert avail_BTC >= 0 && avail_ETH >= 0, {message: 'negative balance', dealer: name}
+    # console.log {message: 'yo', dealer: name, avail_ETH, avail_BTC, dealer_opportunities: by_dealer[name], balance: dbalance}
+    console.assert avail_BTC >= 0 && avail_ETH >= 0, {message: 'negative balance', dealer: name, avail_ETH, avail_BTC, dealer_opportunities: by_dealer[name], balance: dbalance}
     for op in ops 
       r_ETH = op.required_c2 or 0
       r_BTC = op.required_c1 or 0
@@ -394,7 +414,10 @@ create_position = (spec, dealer, exchange_fee) ->
         trade.rate = parseFloat((Math.round(trade.rate * 100) / 100).toFixed(2))
       else 
         trade.rate = parseFloat((Math.round(trade.rate * 1000000) / 1000000).toFixed(6))
-      trade.amount = parseFloat((Math.round(trade.amount * 1000000) / 1000000).toFixed(6))
+      trade.amount = parseFloat((Math.floor(trade.amount * 1000000) / 1000000).toFixed(6))
+
+      if config.c2 == 'BTC' && trade.amount < .01
+        trade.market = true
 
   if buy
     buy.type = 'buy'
@@ -420,14 +443,16 @@ create_position = (spec, dealer, exchange_fee) ->
 
   position
 
-exit_position = (pos, rate, exchange_fee) ->
+exit_position = ({pos, rate, exchange_fee, market_trade, amount}) ->
   console.assert pos.entry, {message: 'position can\'t be exited because entry is undefined', pos: pos, rate: rate} 
   type = if pos.entry.type == 'buy' then 'sell' else 'buy'
-
+  amount = amount or pos.entry.amount
   pos.exit = 
-    amount: pos.entry.amount
+    amount: amount
     type: type
-    rate: rate 
+    rate: rate
+    to_fill: amount
+    market: if market_trade then true 
 
   if config.exchange == 'gdax' 
     for trade in [pos.exit.rate] when trade
@@ -435,7 +460,7 @@ exit_position = (pos, rate, exchange_fee) ->
         trade.rate = parseFloat((Math.round(trade.rate * 100) / 100).toFixed(2))
       else 
         trade.rate = parseFloat((Math.round(trade.rate * 1000000) / 1000000).toFixed(6))
-      trade.amount = parseFloat((Math.round(trade.amount * 1000000) / 1000000).toFixed(6))
+      trade.amount = parseFloat((Math.floor(trade.amount * 1000000) / 1000000).toFixed(6))
 
 
   set_expected_profit pos, exchange_fee
@@ -493,8 +518,6 @@ update_exit = (pos, rate, exchange_fee) ->
     pos.exit = pos.entry 
     pos.entry = p 
 
-
-
   if config.exchange == 'gdax'
 
     if config.c1 == 'USD' # can't have fractions of cents (at least on GDAX!)
@@ -539,7 +562,7 @@ update_exit = (pos, rate, exchange_fee) ->
 
 
   if config.exchange == 'gdax' 
-    new_amount = parseFloat((Math.round(new_amount * 1000000) / 1000000).toFixed(6))
+    new_amount = parseFloat((Math.floor(new_amount * 1000000) / 1000000).toFixed(6))
 
 
   cb = (error) -> 
@@ -639,12 +662,13 @@ destroy_position = (pos) ->
 
 
 set_expected_profit = (pos, exchange_fee) -> 
+  entry = pos.entry
   exit = pos.exit
-  if pos.entry && exit && pos.entry.rate > 0 && exit.rate > 0 
+  if entry && exit && entry.rate > 0 && exit.rate > 0 
+    eth = btc = 0 
 
-    btc = eth = 0 
+    for trade in [entry, exit]
 
-    for trade in [pos.entry, exit]
       if trade.type == 'buy'
         eth += trade.amount 
         if config.exchange == 'poloniex'

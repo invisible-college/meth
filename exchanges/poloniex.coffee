@@ -16,6 +16,39 @@ RATE_LIMIT = 6  # no more than 6 API requests per second
 module.exports = poloniex = 
   all_clear: -> outstanding_requests == 0 && queue.length == 0 
 
+  get_earliest_trade: (opts) ->
+
+    pair = "#{opts.c2}-#{opts.c1}"
+
+    earliest_trades = 
+      "BTC-USDT": 1424304000
+      "ETH-USDT": 1438992000
+      "LTC-USDT": 1425686400 
+      "DASH-USDT": 1424131200
+      "XMR-USDT": 1424131200
+      "XRP-USDT": 1424390400
+      "BCH-USDT": 1502668800
+      "ETC-USDT": 1469664000
+      "ZEC-USDT": 1477612800
+
+      "ETH-BTC": 1438992000
+      "LTC-BTC": 1424304000
+      "DASH-BTC": 1424304000
+      "XRP-BTC": 1424304000
+      "XMR-BTC": 1424304000
+      "BCH-BTC": 1502668800
+      "ZEC-BTC": 1477612800
+
+      "ETC-ETH": 1469318400
+      "ZEC-ETH": 1477612800
+      "BCH-ETH": 1502668800
+
+    console.assert earliest_trades[pair],
+      msg: "earliest trade for #{pair} on not listed in POLONIEX's get_earliest_trade method" 
+
+    return earliest_trades[pair]
+
+
   get_chart_data: (opts, callback) -> 
     poloniex.query_public_api
       command: 'returnChartData'
