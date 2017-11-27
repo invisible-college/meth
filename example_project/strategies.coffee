@@ -694,7 +694,7 @@ strats.gunslinger = (v) ->
 
   defaults: 
     minimum_separation: 0
-    frame_width: v.frame * 60
+    resolution: v.frame * 60
     frames: required_frames(v.long_weight)
 
   position_amount: get_amount

@@ -1,8 +1,5 @@
-require './shared'
 
-global.MIN_HISTORY_INFLUENCE = .001
-
-check_history_continuation = (engine, depth, weight) -> 
+global.check_history_continuation = (engine, depth, weight) -> 
   frames_required = Math.log(MIN_HISTORY_INFLUENCE) / Math.log(1 - weight)
   
   console.assert engine.frames.length >= frames_required - 1, 
@@ -13,161 +10,7 @@ check_history_continuation = (engine, depth, weight) ->
   should_continue
 
 
-f = module.exports = 
-
-  # don't want to have to define feature on all 
-  features: {}
-
-
-  define_feature: (name, func) ->
-    f.features[name] = func 
-
-  create: (frame_width) -> 
-
-    engine = 
-      frame_width: frame_width
-
-      reset: ->
-        engine = extend engine, 
-          cache: {}
-          next_cache: {}
-          price_cache: {}
-          velocity_cache: {}
-          acceleration_cache: {}
-          volume_cache: {}
-          frames: null
-          ticks: 0 
-          now: null
-          last: null
-
-
-        for name, func of f.features
-          engine[name] = initialize_feature engine, name, func
-          engine.cache[name] = {}
-          engine.next_cache[name] = {}
-        engine 
-
-      # assumes trades is sorted newest first       
-      tick: (trades) -> 
-        engine.ticks++ 
-
-        # clear cache every once in awhile
-        if !engine.cache? || engine.ticks % 300 == 299
-          engine.cache = engine.next_cache
-          engine.next_cache = {}
-          engine.price_cache = {}
-          engine.velocity_cache = {}
-          engine.acceleration_cache = {}
-          engine.volume_cache = {}
-          for name, func of f.features
-            engine.next_cache[name] = {} 
-
-        # quantize trades into frames
-        num_frames = engine.num_frames + engine.max_t2
-
-        frames = engine.frames = ([] for i in [0..num_frames - 1])
-
-        last_frame = null 
-        start = 0 
-        end = 0 
-        
-        tick_time = tick.time
-
-        # this loop is super performance sensitive!!        
-        #t1t = Date.now() if config.log
-        for trade, idx in trades 
-
-          if config.simulation && tick.time < trade.date
-            console.assert false, 
-              message: 'Future trades pumped into feature engine'
-              trade: trade 
-              time: tick.time
-
-          frame = ((tick_time - trade.date) / frame_width) | 0 # faster Math.floor
-
-          break if frame > num_frames
-
-          if frame != last_frame && idx != 0
-            frames[last_frame] = trades.slice(start, end + 1)
-            start = idx
-
-          end = idx 
-          last_frame = frame 
-
-        #t_.quant += Date.now() - t1t if t_?
-
-        
-        # it is really bad for feature computation if the last frame is empty, 
-        # especially in weighted features. 
-        # e.g. what should price return if there are consecutive empty frames? 
-        # We handle this case by backfilling a trade from the later frame.
-
-        
-        enough_trades = true 
-        if frames[num_frames - 1].length == 0 
-          enough_trades = false
-          for i in [num_frames - 2..0] when i > -1 
-            if frames[i].length > 0 
-              enough_trades = true 
-              frames[num_frames - 1].push frames[i][frames[i].length - 1]              
-              break 
-
-        engine.trades_loaded = enough_trades
-
-        if engine.now != tick_time
-          engine.last = engine.now
-          engine.now = tick_time 
-
-
-    engine.reset()
-    engine
-
-
-initialize_feature = (engine, name, func) -> 
-
-  (args) -> 
-    xxx = Date.now()
-    e = engine
-    cache = e.cache[name]
-    next_cache = e.next_cache[name]
-    now = e.now
-    frame_width = e.frame_width
-
-    t = args?.t or 0
-    t2 = args?.t2 or t
-    weight = args?.weight or 1
-    vel_weight = args?.vel_weight or ''
-
-    ```
-    key = `${now - t * frame_width}-${now - t2 * frame_width}-${weight}-${vel_weight}`
-    ```
-
-    val = cache[key]
-
-    if !val?
-
-      args ?= {t: 0, t2: 0, weight: 1}
-      args.t ?= 0
-      args.t2 ?= args.t  
-      args.weight ?= 1
-
-      len = e.frames.length
-
-      if args.t > len - 1
-        flengths = (frame.length for frame in e.frames)
-        console.assert false, {message: "WHA!?", name: name, args: args, frames: len, flengths: flengths}
-      else 
-        val = cache[key] = func e, args
-
-    if !(key of next_cache)
-      next_cache[key] = val
-
-
-    t_.x += Date.now() - xxx if t_?
-    val
-
-
-default_features = 
+module.exports = default_features = 
 
   trades: (engine, args) ->
     sum = 0
@@ -180,7 +23,7 @@ default_features =
     weight = args.weight or 1
 
     ```
-    k = `${engine.now - t * engine.frame_width}-${weight}-${engine.now - t2 * engine.frame_width}`
+    k = `${engine.now - t * engine.resolution}-${weight}-${engine.now - t2 * engine.resolution}`
     ```
 
     if k of engine.volume_cache
@@ -223,7 +66,7 @@ default_features =
     t2 = args.t2 or t
 
     ```
-    k = `${engine.now - t * engine.frame_width}-${engine.now - t2 * engine.frame_width}`
+    k = `${engine.now - t * engine.resolution}-${engine.now - t2 * engine.resolution}`
     ```
 
     if !(k of engine.price_cache)
@@ -437,7 +280,7 @@ default_features =
     t = args.t or 0
 
     ```
-    k = `${engine.now - t * engine.frame_width}-${weight}`
+    k = `${engine.now - t * engine.resolution}-${weight}`
     ```
     if k of engine.velocity_cache 
       return engine.velocity_cache[k]
@@ -481,7 +324,7 @@ default_features =
     t = args.t or 0
 
     ```
-    k = `${engine.now - t * engine.frame_width}-${weight}-${vel_weight}`
+    k = `${engine.now - t * engine.resolution}-${weight}-${vel_weight}`
     ```
     if k of engine.acceleration_cache 
       return engine.acceleration_cache[k]
@@ -694,9 +537,4 @@ default_features =
       ADX = Math.weighted_average ADX, adx2, alpha 
 
     ADX
-
-for name, func of default_features
-  f.define_feature name, func 
-
-
 

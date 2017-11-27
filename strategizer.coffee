@@ -39,7 +39,7 @@ make_global module.exports
 module.exports.series = 
 
   defaults: 
-    frame_width: 5
+    resolution: 5
     series: true
     never_exits: true
 
@@ -85,7 +85,7 @@ module.exports.series =
           buy: 
             rate: f.price({weight: v.weight})
             entry: true 
-          series_data: "EMA-#{v.frame_width}"
+          series_data: "EMA-#{v.resolution}"
         pos
 
 
@@ -129,7 +129,7 @@ module.exports.series =
 
     evaluate_new_position: (args) -> 
       f = args.features
-      if Math.random() < .5
+      if Math.random() < 1
         pos = 
           buy: 
             rate: f.price() #f.price()
@@ -312,7 +312,7 @@ module.exports.series =
         buy: 
           rate: MACD
           entry: true 
-        series_data: "MACD-#{1/v.weight}-#{v.frame_width}"
+        series_data: "MACD-#{1/v.weight}-#{v.resolution}"
       pos
 
 
@@ -329,7 +329,7 @@ module.exports.series =
         buy: 
           rate: RSI
           entry: true 
-        series_data: "RSI-#{v.periods}-#{v.frame_width}"
+        series_data: "RSI-#{v.periods}-#{v.resolution}"
       pos
 
 
@@ -354,7 +354,7 @@ module.exports.series =
         buy: 
           rate: rate
           entry: true 
-        series_data: "RSI-thresh-#{v.periods}-#{v.frame_width}-#{v.thresh}"
+        series_data: "RSI-thresh-#{v.periods}-#{v.resolution}-#{v.thresh}"
       pos
 
 
@@ -387,7 +387,7 @@ module.exports.series =
           buy: 
             rate: ADX
             entry: true 
-          series_data: "ADX-#{100 * v.weight}-#{v.frame_width}"
+          series_data: "ADX-#{100 * v.weight}-#{v.resolution}"
         pos
 
 
@@ -404,7 +404,7 @@ module.exports.series =
         buy: 
           rate: 200000000 * m
           entry: true 
-        series_data: "DI_plus-minus-#{100 * v.weight}-#{v.frame_width}"
+        series_data: "DI_plus-minus-#{100 * v.weight}-#{v.resolution}"
       pos
 
   DI_plus: (v) -> 
@@ -421,7 +421,7 @@ module.exports.series =
           buy: 
             rate: 200000 * m
             entry: true 
-          series_data: "DI_plus-#{100 * v.weight}-#{v.frame_width}"
+          series_data: "DI_plus-#{100 * v.weight}-#{v.resolution}"
         pos
 
   DI_minus: (v) -> 
@@ -438,7 +438,7 @@ module.exports.series =
           buy: 
             rate: 200 * m
             entry: true 
-          series_data: "DI_minus-#{100 * v.weight}-#{v.frame_width}"
+          series_data: "DI_minus-#{100 * v.weight}-#{v.resolution}"
         pos
 
   DM_plus: (v) -> 
@@ -454,7 +454,7 @@ module.exports.series =
         buy: 
           rate: 200 * m
           entry: true 
-        series_data: "DM_plus-#{100 * v.weight}-#{v.frame_width}"
+        series_data: "DM_plus-#{100 * v.weight}-#{v.resolution}"
       pos
 
   DM_minus: (v) -> 
@@ -470,7 +470,7 @@ module.exports.series =
         buy: 
           rate: 200 * m
           entry: true 
-        series_data: "DM_minus-#{100 * v.weight}-#{v.frame_width}"
+        series_data: "DM_minus-#{100 * v.weight}-#{v.resolution}"
       pos
 
 
@@ -489,7 +489,7 @@ module.exports.series =
         buy: 
           rate: if p > m then 75 else 25
           entry: true 
-        series_data: "DM-#{100 * v.weight}-#{v.frame_width}"
+        series_data: "DM-#{100 * v.weight}-#{v.resolution}"
       pos
 
 
@@ -507,7 +507,7 @@ module.exports.series =
         buy: 
           rate: if p > m then 75 else 25
           entry: true 
-        series_data: "DI-#{100 * v.weight}-#{v.frame_width}"
+        series_data: "DI-#{100 * v.weight}-#{v.resolution}"
       pos
 
   ATR: (v) -> 
@@ -524,6 +524,6 @@ module.exports.series =
           buy: 
             rate: 50000 * m
             entry: true 
-          series_data: "ATR-#{100 * v.weight}-#{v.frame_width}"
+          series_data: "ATR-#{100 * v.weight}-#{v.resolution}"
         pos
 

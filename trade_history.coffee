@@ -189,7 +189,7 @@ module.exports = history =
     for key in get_all_actors() 
       dealer_data = from_cache(key)
 
-      hist_length = (dealer_data.frames + (dealer_data.max_t2 or 0) + 1) * dealer_data.settings.frame_width
+      hist_length = (dealer_data.frames + (dealer_data.max_t2 or 0) + 1) * dealer_data.settings.resolution
 
       console.assert hist_length && !isNaN(hist_length), 
         message: 'requested history for dealer is bad!'
@@ -197,7 +197,7 @@ module.exports = history =
         dealer: key
         frames: dealer_data.frames
         max_t2: dealer_data.max_t2 or 0
-        frame_width: dealer_data.settings.frame_width
+        resolution: dealer_data.settings.resolution
       hist_lengths.push hist_length
 
     hist_lengths.push 10 * 60 # at least 10 minute frames, otherwise 

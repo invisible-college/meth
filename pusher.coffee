@@ -1,13 +1,9 @@
 require './shared'
 
-feature_engine = require( './features')
+feature_engine = require './feature_engine'
 
 global.dealers = {}
-global.feature_engines = {}
-
 global.open_positions = {}
-
-
 
 
 
@@ -44,10 +40,10 @@ learn_strategy = (name, teacher, strat_dealers) ->
   for dealer_conf,idx in strat_dealers
 
     dealer_conf = defaults dealer_conf,
-      frame_width: 5
+      resolution: 5
       max_open_positions: 9999999
     
-    dealer_conf.frame_width *= 60
+    dealer_conf.resolution *= 60
 
     if dealer_conf.max_open_positions > 1 && !dealer_conf.cooloff_period?
       dealer_conf.cooloff_period = 4 * 60
@@ -89,14 +85,6 @@ learn_strategy = (name, teacher, strat_dealers) ->
 
 
 
-
-
-unregister_strategies = -> 
-  global.dealers = {}
-  feature_engines = {}
-
-
-
 init = ({history, clear_all_positions, take_position, cancel_unfilled, update_exit}) -> 
   for name in get_dealers() 
     dealer_data = from_cache name
@@ -107,23 +95,17 @@ init = ({history, clear_all_positions, take_position, cancel_unfilled, update_ex
 
   history.set_longest_requested_history()
 
-  for k,v of feature_engines
-    v.reset()
-
   for name in get_all_actors() 
     dealer_data = from_cache name
     has_open_positions = open_positions[name]?.length > 0
 
     # create a feature engine that will generate features with trades quantized
-    # by frame_width seconds
-    frame_width = dealer_data.settings.frame_width
-    if !feature_engines[frame_width]
-      feature_engines[frame_width] = feature_engine.create frame_width
+    # by resolution seconds
+    resolution = dealer_data.settings.resolution
 
-    engine = feature_engines[frame_width]
+    engine = feature_engine.create resolution
     engine.num_frames = Math.max dealer_data.frames, (engine.num_frames or 0)
     engine.max_t2 = Math.max (dealer_data.max_t2 or 0), (engine.max_t2 or 0)
-
     engine.checks_per_frame = Math.max (dealer_data.settings?.checks_per_frame or 0), (engine.checks_per_frame or config.checks_per_frame)
 
     dealers[name]?.feature_engine = engine
@@ -162,30 +144,28 @@ find_opportunities = (trade_history, exchange_fee, balance) ->
   # note that only some dealers need to be updated, depending on frame width
 
   yyy = Date.now()
-  for name, engine of feature_engines
-    last_updated = engine.now
-    if (!last_updated || tick.time - last_updated >= engine.frame_width / (engine.checks_per_frame or config.checks_per_frame)) 
-      engine.tick trade_history
+  engines_with_new_data = {}
+  for resolution, engine of feature_engine.resolutions
+    engines_with_new_data[resolution] = engine.tick trade_history
   t_.feature_tick += Date.now() - yyy if t_?
 
-  if !find_opportunities.dealers_by_frame_width
+  if !find_opportunities.dealers_by_resolution
     actors = get_all_actors()
     actors_by_fw = {}
     for actor in actors 
-      fw = from_cache(actor).settings.frame_width
+      fw = from_cache(actor).settings.resolution
       actors_by_fw[fw] ||= []
-      actors_by_fw[fw].push actor 
+      actors_by_fw[fw].push actor
 
-    find_opportunities.actors_by_frame_width = actors_by_fw
+    find_opportunities.actors_by_resolution = actors_by_fw
 
 
   # identify new positions and changes to old positions (opportunities)
   opportunities = []
 
-  for frame_width, actors of find_opportunities.actors_by_frame_width
-    features = feature_engines[frame_width]
-    if features.now != tick.time || !features.trades_loaded
-      continue
+  for resolution, actors of find_opportunities.actors_by_resolution
+    continue if !engines_with_new_data[resolution]
+    features = feature_engine.resolutions[resolution]
 
     for name in actors
       dealer_data = from_cache(name)
@@ -794,6 +774,6 @@ hustle = (balance, trades) ->
 
     #t_.exec += Date.now() - yyy if t_?
 
-pusher = module.exports = {init, hustle, learn_strategy, destroy_position, unregister_strategies, reset_open}
+pusher = module.exports = {init, hustle, learn_strategy, destroy_position, reset_open}
 
 
