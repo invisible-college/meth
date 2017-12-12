@@ -12,7 +12,7 @@ learn_strategy = (name, teacher, strat_dealers) ->
   console.assert uniq(strat_dealers), {message: 'dealers aren\'t unique!', dealers: strat_dealers}
 
   operation = from_cache 'operation'
-  #if !(name of operation)
+
   operation[name] =       
     key: name
     dealers: []
@@ -40,11 +40,8 @@ learn_strategy = (name, teacher, strat_dealers) ->
   for dealer_conf,idx in strat_dealers
 
     dealer_conf = defaults dealer_conf,
-      resolution: 5
       max_open_positions: 9999999
     
-    dealer_conf.resolution *= 60
-
     if dealer_conf.max_open_positions > 1 && !dealer_conf.cooloff_period?
       dealer_conf.cooloff_period = 4 * 60
 
@@ -62,8 +59,6 @@ learn_strategy = (name, teacher, strat_dealers) ->
       dealer_data = extend dealer_data,
         parent: '/' + strategy.key 
         positions: []
-        frames: dealer.frames
-        max_t2: dealer.max_t2
 
     dealer_data.settings = dealer_conf
 
@@ -93,26 +88,38 @@ init = ({history, clear_all_positions, take_position, cancel_unfilled, update_ex
   reset_open()
   clear_positions() if clear_all_positions
 
-  history.set_longest_requested_history()
+  pusher.dealer_last_updated = {}
 
   for name in get_all_actors() 
     dealer_data = from_cache name
+    dealer = dealers[name]
     has_open_positions = open_positions[name]?.length > 0
+
 
     # create a feature engine that will generate features with trades quantized
     # by resolution seconds
-    resolution = dealer_data.settings.resolution
 
-    engine = feature_engine.create resolution
-    engine.num_frames = Math.max dealer_data.frames, (engine.num_frames or 0)
-    engine.max_t2 = Math.max (dealer_data.max_t2 or 0), (engine.max_t2 or 0)
-    engine.checks_per_frame = Math.max (dealer_data.settings?.checks_per_frame or 0), (engine.checks_per_frame or config.checks_per_frame)
+    for d in dealer.dependencies
+      resolution = d[0]
+      engine = feature_engine.create resolution
 
-    dealers[name]?.feature_engine = engine
+      engine.subscribe_dealer name, dealer, dealer_data
+      dealer.features ?= {}
+      dealer.features[resolution] = engine
+
+    pusher.dealer_last_updated[name] = 0
+
+  history_buffer = (e.num_frames * res + 1 for res, e of feature_engine.resolutions)
+  history_buffer = Math.max.apply null, history_buffer
+
+  history.set_longest_requested_history history_buffer
 
   pusher.take_position = take_position if take_position
   pusher.cancel_unfilled = cancel_unfilled if cancel_unfilled
   pusher.update_exit = update_exit if update_exit
+
+
+
 
 
 
@@ -140,149 +147,120 @@ find_opportunities = (trade_history, exchange_fee, balance) ->
     message: "tick.time is not defined!"
     tick: tick
 
-  # prepare all features
-  # note that only some dealers need to be updated, depending on frame width
-
-  yyy = Date.now()
-  engines_with_new_data = {}
-  for resolution, engine of feature_engine.resolutions
-    engines_with_new_data[resolution] = engine.tick trade_history
-  t_.feature_tick += Date.now() - yyy if t_?
-
-  if !find_opportunities.dealers_by_resolution
-    actors = get_all_actors()
-    actors_by_fw = {}
-    for actor in actors 
-      fw = from_cache(actor).settings.resolution
-      actors_by_fw[fw] ||= []
-      actors_by_fw[fw].push actor
-
-    find_opportunities.actors_by_resolution = actors_by_fw
-
-
   # identify new positions and changes to old positions (opportunities)
   opportunities = []
 
-  for resolution, actors of find_opportunities.actors_by_resolution
-    continue if !engines_with_new_data[resolution]
-    features = feature_engine.resolutions[resolution]
+  for name in get_all_actors()
+    dealer_data = from_cache name
+    settings = dealer_data.settings
 
-    for name in actors
-      dealer_data = from_cache(name)
-      settings = dealer_data.settings
-      
-      zzz = Date.now()
+    update_every_n_minutes = settings.update_every_n_minutes or config.update_every_n_minutes
 
-      # A strategy can't have too many positions on the books at once...
-      if settings.series || settings.never_exits || open_positions[name].length < settings.max_open_positions
+    if tick.time - pusher.dealer_last_updated < update_every_n_minutes * 60
+      continue 
 
-        dealer = dealers[name]
+    pusher.dealer_last_updated[name] = tick.time
 
-        yyy = Date.now()
-        spec = dealer.evaluate_new_position 
-          dealer: name
-          features: features
-          open_positions: open_positions[name]
-          balance: balance
-        t_.eval_pos += Date.now() - yyy if t_?
+    dealer = dealers[name]
 
-        #yyy = Date.now()
-        if spec 
-          position = create_position spec, name, exchange_fee
-          #t_.create_pos += Date.now() - yyy if t_?
+    yyy = Date.now()
+    for resolution, engine of dealer.features when engine.now != tick.time
+      engine.tick trade_history
+    t_.feature_tick += Date.now() - yyy if t_?
 
-          yyy = Date.now()      
-          valid = position && is_valid_position(position, balance[position.dealer])
-          found_match = false 
+    
+    zzz = Date.now()
 
-          if valid
-            
+    # A strategy can't have too many positions on the books at once...
+    if settings.series || settings.never_exits || open_positions[name].length < settings.max_open_positions
 
-            if !position.series_data && settings.never_exits
-              candidates = (p for p in open_positions[name] when !p.exit && p.entry.type != position.entry.type)
+    
+      yyy = Date.now()
 
-              if candidates.length > 1
-                candidates.sort( (a,b) -> b.created - a.created )
+      spec = dealer.evaluate_new_position  
+        dealer: name
+        open_positions: open_positions[name]
+        balance: balance      
+        
+      t_.eval_pos += Date.now() - yyy if t_?
 
-              pos = candidates.pop()
+      #yyy = Date.now()
+      if spec 
+        position = create_position spec, name, exchange_fee
+        #t_.create_pos += Date.now() - yyy if t_?
 
-              if pos 
-                rate = position.entry.rate
-                amount = position.entry.amount or pos.entry.amount
-                total_available = if position.entry.type == 'buy' 
-                                    balance[pos.dealer].balances.c1 / rate
-                                  else 
-                                    balance[pos.dealer].balances.c2
+        yyy = Date.now()      
+        valid = position && is_valid_position(position, balance[position.dealer])
+        found_match = false 
 
-                amount = Math.min amount, total_available
+        if valid
+          
 
-                opportunities.push
-                  pos: pos
-                  action: 'exit'
-                  rate: rate
-                  amount: amount
-                  required_c2: if position.entry.type == 'sell' then amount
-                  required_c1: if position.entry.type == 'buy'  then amount * rate
-                  market: if pos.entry.market then true 
+          if !position.series_data && settings.never_exits
+            candidates = (p for p in open_positions[name] when !p.exit && p.entry.type != position.entry.type)
 
-                found_match = pos 
+            if candidates.length > 1
+              candidates.sort( (a,b) -> b.created - a.created )
 
-            # if settings.merge_positions && !position.series_data
-            #   for pos, idx in open_positions[name] when pos.exit && pos.entry.closed && !pos.exit.closed && \
-            #                                             pos.entry.type != position.entry.type && \
-            #                                             (settings.merge_positions == 'casual' || \ 
-            #                                              Math.abs(pos.entry.rate - pos.exit.rate) >= Math.abs(pos.entry.rate - position.entry.rate))
+            pos = candidates.pop()
 
-            #     new_exit = position.entry
-            #     opportunities.push
-            #       pos: pos
-            #       action: 'update_exit'
-            #       rate: new_exit.rate
-            #       required_c1: if new_exit.type == 'buy' then pos.exit.amount * (new_exit.rate - pos.exit.rate)
+            if pos 
+              rate = position.entry.rate
+              amount = position.entry.amount or pos.entry.amount
+              total_available = if position.entry.type == 'buy' 
+                                  balance[pos.dealer].balances.c1 / rate
+                                else 
+                                  balance[pos.dealer].balances.c2
 
-            #     found_match = pos
+              amount = Math.min amount, total_available
 
-            #     break
+              opportunities.push
+                pos: pos
+                action: 'exit'
+                rate: rate
+                amount: amount
+                required_c2: if position.entry.type == 'sell' then amount
+                required_c1: if position.entry.type == 'buy'  then amount * rate
+                market: if pos.entry.market then true 
+
+              found_match = pos 
 
 
-            if !found_match
-              sell = if position.entry.type == 'sell' then position.entry else position.exit
-              buy  = if position.entry.type == 'buy'  then position.entry else position.exit
+          if !found_match
+            sell = if position.entry.type == 'sell' then position.entry else position.exit
+            buy  = if position.entry.type == 'buy'  then position.entry else position.exit
 
-              opportunities.push 
-                pos: position
-                action: 'create'
-                required_c2: if sell then sell.amount
-                required_c1: if  buy then buy.amount * buy.rate
+            opportunities.push 
+              pos: position
+              action: 'create'
+              required_c2: if sell then sell.amount
+              required_c1: if  buy then buy.amount * buy.rate
 
-      t_.handle_new += Date.now() - zzz if t_?
+    t_.handle_new += Date.now() - zzz if t_?
 
-      continue if dealer_data.settings.series
+    continue if dealer_data.settings.series
 
-      # see if any open positions want to exit
-      yyy = Date.now()      
+    # see if any open positions want to exit
+    yyy = Date.now()      
 
-      eval_open = global.dealers[name].evaluate_open_position
+    for pos in open_positions[name] when !pos.series_data && found_match != pos
+      opportunity = dealer.evaluate_open_position
+        position: pos 
+        dealer: name
+        open_positions: open_positions[name]
+        balance: balance 
 
-      for pos in open_positions[name] when !pos.series_data && found_match != pos
-        opportunity = eval_open
-          position: pos 
-          dealer: name
-          features: features
-          open_positions: open_positions[name]
-          balance: balance 
+      if opportunity
+        if opportunity.action == 'exit'
+          if pos.entry.type == 'buy'
+            opportunity.required_c2 = opportunity.amount or pos.entry.amount
+          else 
+            opportunity.required_c1 = (opportunity.amount or pos.entry.amount) * opportunity.rate
 
-        if opportunity
-          if opportunity.action == 'exit'
-            if pos.entry.type == 'buy'
-              opportunity.required_c2 = opportunity.amount or pos.entry.amount
-            else 
-              opportunity.required_c1 = (opportunity.amount or pos.entry.amount) * opportunity.rate
+        opportunity.pos = pos 
+        opportunities.push opportunity
 
-          opportunity.pos = pos 
-          opportunities.push opportunity
-
-      t_.handle_open += Date.now() - yyy if t_?
+    t_.handle_open += Date.now() - yyy if t_?
 
 
   if !uniq(opportunities)

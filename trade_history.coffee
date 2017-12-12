@@ -83,7 +83,7 @@ module.exports = history =
           , data_callback
 
         data_callback = (price_history) ->
-          price_history ||= []          
+          price_history ||= []   
           price_history.sort (a,b) -> a.date - b.date
 
           error = price_history.length == 0 || price_history[0].date > start || price_history[price_history.length - 1].date + period < end
@@ -184,26 +184,10 @@ module.exports = history =
     else 
       load_hours()
 
-  set_longest_requested_history: (dealers) -> 
-    hist_lengths = []
-    for key in get_all_actors() 
-      dealer_data = from_cache(key)
-
-      hist_length = (dealer_data.frames + (dealer_data.max_t2 or 0) + 1) * dealer_data.settings.resolution
-
-      console.assert hist_length && !isNaN(hist_length), 
-        message: 'requested history for dealer is bad!'
-        hist_length: hist_length
-        dealer: key
-        frames: dealer_data.frames
-        max_t2: dealer_data.max_t2 or 0
-        resolution: dealer_data.settings.resolution
-      hist_lengths.push hist_length
-
-    hist_lengths.push 10 * 60 # at least 10 minute frames, otherwise 
-                              # problems caused by not having enough trades
-
-    @longest_requested_history = Math.max.apply null, hist_lengths
+  set_longest_requested_history: (max_length) -> 
+    # at least 10 minute frames, otherwise 
+    # problems caused by not having enough trades
+    @longest_requested_history = Math.max max_length, 0 #10 * 60
 
   latest: -> @trades[@trades.length - 1]
 

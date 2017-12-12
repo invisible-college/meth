@@ -51,7 +51,7 @@ if resimulate
     tick_interval: 60 * 1 # how often to assess new opportunities 
     enforce_balance: true
     log: true
-    checks_per_frame: 1
+    update_every_n_minutes: 5
     offline: false
 
 

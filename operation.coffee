@@ -513,7 +513,7 @@ operation = module.exports =
       c1: 'BTC'
       c2: 'ETH'
       accounting_currency: 'USDT'
-      checks_per_frame: 2
+      update_every_n_minutes: 20
       enforce_balance: true
 
     bus.save config 

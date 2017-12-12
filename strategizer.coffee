@@ -39,7 +39,7 @@ make_global module.exports
 module.exports.series = 
 
   defaults: 
-    resolution: 5
+    resolution: 5 * 60
     series: true
     never_exits: true
 
@@ -124,11 +124,10 @@ module.exports.series =
         pos
 
   price: (v) -> 
-    frames: required_frames(v.weight or 1) + 1
-
+    dependencies: [[v.resolution, 'price', {weight: v.weight or 1}]]
 
     evaluate_new_position: (args) -> 
-      f = args.features
+      f = @features[v.resolution]
       if Math.random() < 1
         pos = 
           buy: 
@@ -301,8 +300,7 @@ module.exports.series =
 
 
   MACD: (v) -> 
-    frames: required_frames(v.weight * 12/26) + 2
-    max_t2: 100
+    dependencies: [[v.resolution, 'MACD',  {weight: v.weight}]]
 
     evaluate_new_position: (args) ->
       f = args.features
@@ -314,6 +312,49 @@ module.exports.series =
           entry: true 
         series_data: "MACD-#{1/v.weight}-#{v.resolution}"
       pos
+
+  MACD_signal: (v) -> 
+    dependencies: [[v.resolution, 'MACD_signal',  {weight: v.weight}]]
+
+    evaluate_new_position: (args) ->
+      f = args.features
+      MACD = f.MACD_signal {weight: v.weight}
+
+      pos = 
+        buy: 
+          rate: MACD
+          entry: true 
+        series_data: "signal-MACD-#{1/v.weight}-#{v.resolution}"
+      pos
+
+  MACD_short: (v) -> 
+    dependencies: [[v.resolution, 'price',  {weight: v.weight}]]
+
+    evaluate_new_position: (args) ->
+      f = args.features
+      p = f.price {weight: v.weight}
+
+      pos = 
+        buy: 
+          rate: p
+          entry: true 
+        series_data: "short-MACD-#{1/v.weight}-#{v.resolution}"
+      pos
+
+  MACD_long: (v) -> 
+    dependencies: [[v.resolution, 'price',  {weight: v.weight * 12/26}]]
+
+    evaluate_new_position: (args) ->
+      f = args.features
+      p = f.price {weight: v.weight * 12/26}
+
+      pos = 
+        buy: 
+          rate: p
+          entry: true 
+        series_data: "long-MACD-#{1/v.weight}-#{v.resolution}"
+      pos
+
 
 
 

@@ -758,6 +758,8 @@ lab = module.exports =
     next()
 
   experiment: (conf, callback) -> 
+
+
     global.config = {}
 
     global.config = defaults global.config, conf, 
@@ -773,9 +775,9 @@ lab = module.exports =
       exchange_fee: .0020
       log: true
       enforce_balance: true
-      persist: true
+      persist: false
       analyze: false
-      checks_per_frame: 2
+      update_every_n_minutes: 20
       produce_heapdump: false
       offline: false
       auto_shorten_time: true
@@ -787,6 +789,14 @@ lab = module.exports =
 
     ts = config.end or now()
 
+
+    # history.load_chart_history "c1xc2", config.c1, config.c2, ts - 20 * 365 * 24 * 60 * 60, ts, -> 
+    #   console.log 'use me to get earliest trade for pair', config.c1, config.c2
+    #   process.exit()
+    # return
+
+
+
     pusher.init
       history: history 
       clear_all_positions: true 
@@ -797,7 +807,7 @@ lab = module.exports =
     # console.log 'longest requested history:', history.longest_requested_history
     history_width = history.longest_requested_history + config.simulation_width + 24 * 60 * 60
 
-    earliest_trade_for_pair = exchange.get_earliest_trade {c1: config.c1, c2: config.c2}
+    earliest_trade_for_pair = exchange.get_earliest_trade {c1: config.c1, c2: config.c2, accounting_currency: config.accounting_currency}
 
     if ts > earliest_trade_for_pair
       if config.auto_shorten_time && ts - history_width < earliest_trade_for_pair
@@ -898,7 +908,7 @@ lab = module.exports =
         paths.shift() if paths[0] == ''
 
         prefix = ''
-        server = "statei://localhost:#{port}"
+        server = "statei://localhost:#{bus.port}"
 
         html = """
           <!DOCTYPE html>

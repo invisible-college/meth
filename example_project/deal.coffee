@@ -53,5 +53,5 @@ operation.start
   c1_budget: 0.005    # set your budget!!!
   c2_budget: 0.1  
   accounting_currency: accounting_currency
-  checks_per_frame: 2
+  update_every_n_minutes: 5
   enforce_balance: true

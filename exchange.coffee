@@ -14,8 +14,13 @@ module.exports = exchange =
   # opts: 
   # c1, c2
   get_earliest_trade: (opts) ->
-    exchange[config.exchange].get_earliest_trade opts
-
+    if opts.c1 != opts.accounting_currency && opts.c2 != opts.accounting_currency
+      Math.max  exchange[config.exchange].get_earliest_trade({c1: opts.c1, c2: opts.c2}), \
+                exchange[config.exchange].get_earliest_trade({c1: opts.accounting_currency, c2: opts.c1}), \
+                exchange[config.exchange].get_earliest_trade({c1: opts.accounting_currency, c2: opts.c2})
+    else 
+      exchange[config.exchange].get_earliest_trade({c1: opts.c1, c2: opts.c2})
+      
   # opts: 
   #  c1, c2, start, end, period, callback
   get_chart_data: (opts, callback) -> 
