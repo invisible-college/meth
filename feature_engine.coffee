@@ -92,30 +92,57 @@ feature_engine = module.exports =
         
         tick_time = tick.time
 
+        num_trades = trades.length
+
+        if config.simulation && (tick.time < trades[0].date || tick.time < trades[num_trades - 1].date)
+          console.assert false, 
+            message: 'Future trades pumped into feature engine'
+            trade: trade 
+            time: tick.time
+
         # this loop is super performance sensitive!!        
-        #t1t = Date.now() if config.log
-        for trade, idx in trades 
+        t1t = Date.now() if config.log
 
-          if config.simulation && tick.time < trade.date
-            console.assert false, 
-              message: 'Future trades pumped into feature engine'
-              trade: trade 
-              time: tick.time
+        last_frame_w = 100
+        a = last_boundary = 0 
+        frame_boundaries = []
+        for frame_boundary in [0..num_frames - 1]
+          b = a + last_frame_w
+          fr_a = ((tick_time - trades[a].date) / resolution) | 0  # faster Math.floor
+          while b - a > 1
+            if b >= num_trades
+              b = num_trades - 1
 
-          frame = ((tick_time - trade.date) / resolution) | 0 # faster Math.floor
+            idx += 1
+            fr_b = ((tick_time - trades[b].date) / resolution) | 0  # faster Math.floor
 
-          break if frame > num_frames
+            if fr_a == fr_b 
+              diff = b - a
+              a = b 
+              b += diff
+              
+            else 
+              b -= ((b - a) / 2) | 0  # faster Math.floor
 
-          if frame != last_frame && idx != 0
-            frames[last_frame] = trades.slice(start, end + 1)
-            start = idx
+          if fr_a == fr_b 
+            a = b
+            b += 1 # sometimes happens from rounding issue with Math.floor
 
-          end = idx 
-          last_frame = frame 
+          frame_boundaries.push [last_boundary, b]
+          last_frame_w = b - last_boundary
+          last_boundary = b
+          a = b + 1
 
-        #t_.quant += Date.now() - t1t if t_?
+        t_.b += Date.now() - t1t if t_?
 
-        
+
+        t2t = Date.now() if config.log
+        for boundary,idx in frame_boundaries
+          frames[idx] = trades.slice(boundary[0], boundary[1])
+        t_.z += Date.now() - t2t if t_?
+
+
+          
         # it is really bad for feature computation if the last frame is empty, 
         # especially in weighted features. 
         # e.g. what should price return if there are consecutive empty frames? 

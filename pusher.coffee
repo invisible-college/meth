@@ -164,8 +164,10 @@ find_opportunities = (trade_history, exchange_fee, balance) ->
     dealer = dealers[name]
 
     yyy = Date.now()
+    proceed = true 
     for resolution, engine of dealer.features when engine.now != tick.time
-      engine.tick trade_history
+      proceed &&= engine.tick trade_history
+    return if !proceed
     t_.feature_tick += Date.now() - yyy if t_?
 
     
