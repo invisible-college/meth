@@ -5,6 +5,17 @@ fs = require('fs')
 
 RATE_LIMIT = 1000
 
+GDAX_client = (opts) ->
+  product_id = "#{opts.c2 or config.c2}-#{opts.c1 or config.c1}"
+  if api_credentials?
+    client = new Gdax.AuthenticatedClient api_credentials.key, api_credentials.secret, api_credentials.pass
+    client.productID = product_id
+  else 
+    client = new Gdax.PublicClient(product_id)
+
+  client
+  
+    
 write_trades = (hour, trades, c1, c2) -> 
   if hour + 1 <= current_hour && trades?.length > 0
     fname = "trade_history/gdax/#{c1}_#{c2}/#{hour}"    
@@ -23,7 +34,7 @@ get_trades = (client, c1, c2, hours, after, stop_when_cached, callback, stop_aft
       console.error {message: 'error downloading trades! trying again', error: error, data: data}
       setTimeout ->
         client.getProductTrades {after: after, limit: limit}, cb 
-      , 5000
+      , 1000
       return
 
     later_hour = null
@@ -83,7 +94,7 @@ current_hour = null
 
 
 load_trades = (opts) -> 
-  client = new Gdax.PublicClient("#{opts.c2}-#{opts.c1}")
+  client = GDAX_client opts
 
   dir = "trade_history/gdax/#{opts.c1}_#{opts.c2}"
   if !fs.existsSync dir 
@@ -98,7 +109,7 @@ load_trades = (opts) ->
       console.error {message: 'error downloading trades! trying again', error: error, data: data}
       setTimeout ->
         client.getProductTrades {limit: 1}, cb 
-      , 5000
+      , 1000
       return
 
     i = 0 # used in recursion for get_trades
@@ -123,7 +134,7 @@ _find_page_for_hour = (client, hour, current_page, previous_page, callback) ->
       console.error {message: 'error downloading trades! trying again', error: error, data: data}
       setTimeout -> 
         client.getProductTrades {after: current_page, limit: limit}, cb
-      , 5000
+      , 1000
       return
 
     early_hour = later_hour = null
@@ -158,13 +169,14 @@ _find_page_for_hour = (client, hour, current_page, previous_page, callback) ->
 
 
 find_page_for_hour = (opts, callback) ->
-  client = new Gdax.PublicClient("#{opts.c2}-#{opts.c1}")  
+  client = GDAX_client opts
+
   cb = (error, response, data) -> 
     if error || !data || data.message
       console.error {message: 'error downloading trades! trying again', error: error, data: data}
       setTimeout ->
         client.getProductTrades {limit: 1}, cb 
-      , 5000
+      , 1000
       return
 
     current_hour = Math.floor(new Date(data[0].time).getTime() / 1000 / 60 / 60)
@@ -198,7 +210,7 @@ load_chart_data = (client, opts, callback) ->
         console.error {message: 'error getting chart data, trying again', error: error, message: data?.message}
         setTimeout -> 
           client.getProductHistoricRates {start, end, granularity}, cb
-        , 5000
+        , 1000
         return 
         
       all_data.push data 
@@ -256,7 +268,7 @@ module.exports = gdax =
 
 
   get_chart_data: (opts, callback) -> 
-    client = new Gdax.PublicClient("#{opts.c2}-#{opts.c1}")
+    client = GDAX_client opts
     opts.start = opts.start - 10000
     load_chart_data client, opts, (chart_data) -> 
       # transform to Poloniex-like format
@@ -395,8 +407,8 @@ module.exports = gdax =
 
 
   get_my_balance: (opts, callback) -> 
-    client = new Gdax.AuthenticatedClient api_credentials.key, api_credentials.secret, api_credentials.pass
-    
+    client = GDAX_client opts
+
     cb = (error, response, data) ->
       if error || !data || data.message
         console.error {message: "error getting data for #{method}, trying again", error: error, message: data?.message}
@@ -452,7 +464,7 @@ module.exports = gdax =
 
 
 queued_request = (method, opts, callback) -> 
-  client = new Gdax.AuthenticatedClient api_credentials.key, api_credentials.secret, api_credentials.pass
+  client = GDAX_client opts
 
   ts = null 
   cb = (error, response, data) ->
@@ -492,7 +504,7 @@ queued_request = (method, opts, callback) ->
 # currently assumes that method returns reverse-chronologically array of objects with a created_at field
 depaginated_request = (method, opts, callback) -> 
 
-  client = new Gdax.AuthenticatedClient api_credentials.key, api_credentials.secret, api_credentials.pass
+  client = GDAX_client opts
 
   all_data = []
 
