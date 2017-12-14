@@ -24,11 +24,6 @@ module.exports = f = {}
 
 
 
-f.trades = (engine, args) ->
-  sum = 0
-  sum += engine.frames[i].length for i in [args.t..args.t2] when i < engine.frames.length
-  sum 
-
 f.volume = (engine, args) -> 
   t = args.t
   t2 = args.t2 or t
@@ -42,8 +37,8 @@ f.volume = (engine, args) ->
     return engine.volume_cache[k]
   else
     v = 0
-    for i in [t..t2] when i < engine.frames.length
-      for trade in (engine.frames[i] or [])
+    for i in [t..t2] when i < engine.num_frames
+      for trade in (engine.frame(i) or [])
         v += trade.amount  
 
     # cut off recursing after the impact of calculating the previous time 
@@ -61,6 +56,9 @@ f.volume = (engine, args) ->
     engine.volume_cache[k] = v
     v 
 
+f.volume.frames = (args) -> 
+  t = args.t or 0
+  t + frames_for_weight((args.weight) or 1) + (args.t2 or 0) + 1
 
 
 
@@ -75,11 +73,12 @@ f.price = (engine, args) ->
   ```
 
   if !(k of engine.price_cache)
+
     amount = 0
     total = 0
     num = 0
-    for i in [t..t2] when i < engine.frames.length
-      for trade in (engine.frames[i] or [])
+    for i in [t..t2] when i < engine.num_frames
+      for trade in (engine.frame(i) or [])
         amount += trade.amount
         total += trade.total 
         num++
@@ -88,10 +87,12 @@ f.price = (engine, args) ->
   else 
     [amount, total] = engine.price_cache[k]
 
+
   if total > 0 
     p = total / amount
 
     should_continue = weight < 1 && check_history_continuation(engine, t, weight)
+
     if should_continue
       p2 = engine.price
         t: t + 1
@@ -100,6 +101,7 @@ f.price = (engine, args) ->
 
       p = Math.weighted_average p, p2, weight 
   else 
+
     p = engine.price 
       t: t + 1
       t2: t2 + 1
@@ -117,8 +119,8 @@ f.min_price = (engine, args) ->
   t = args.t
   t2 = args.t2 or t
   min = Infinity
-  for i in [t..t2] when i < engine.frames.length
-    for trade in (engine.frames[i] or [])
+  for i in [t..t2] when i < engine.num_frames
+    for trade in engine.frame(i)
       if min > trade.rate 
         min = trade.rate 
 
@@ -132,8 +134,10 @@ f.max_price = (engine, args) ->
   t2 = args.t2 or t
   max = 0
 
-  for i in [t..t2] when i < engine.frames.length
-    for trade in (engine.frames[i] or [])
+  for i in [t..t2] when i < engine.num_frames
+    trades = engine.frame(i)
+
+    for trade in trades
       if max < trade.rate 
         max = trade.rate 
 
@@ -146,18 +150,15 @@ f.min_price.frames = f.max_price.frames = (args) -> f.last_price.frames(args) + 
 
 
 f.last_price = (engine, args) -> 
-  args.t ||= 0
-
-  if engine.frames[args.t]?[0]?
-    engine.frames[args.t][0].rate
-  else 
-    engine.last_price t: args.t + 1
+  t = args.t or 0
+  engine.last_trade(t).rate
 
 f.first_price = (engine, args) -> 
-  args.t ||= 0
+  t = args.t or 0
 
-  if engine.frames[args.t]?.length > 0 
-    engine.frames[args.t][engine.frames[args.t].length - 1].rate
+  if engine.frame(t)?.length > 0
+    frame = engine.frame(t) 
+    frame[frame.length - 1].rate
   else 
     engine.last_price t: args.t + 1
 
@@ -167,14 +168,17 @@ f.last_price.frames = f.first_price.frames = (args) -> args.t + 3
 
 f.price_stddev = (engine, args) -> 
   rates = []
-  for i in [args.t..args.t2] when i < engine.frames.length
-    for trade in (engine.frames[i] or [])
+  for i in [args.t..args.t2] when i < engine.num_frames
+    for trade in (engine.frame(i) or [])
       rates.push trade.rate 
 
   if rates.length > 0 
     Math.standard_dev rates 
   else 
     null 
+
+f.price_stddev.frames = (args) -> 
+  (args.t or 0) + (args.t2 or 0) + 2
 
 f.volume_adjusted_price_stddev = (engine, args) -> 
   # https://tabbforum.com/opinions/quantifying-intraday-volatility?print_preview=true&single=true
@@ -185,8 +189,8 @@ f.volume_adjusted_price_stddev = (engine, args) ->
   observations = 0 
   total_volume = 0
 
-  for i in [args.t..args.t2] when i < engine.frames.length
-    for trade in (engine.frames[i] or [])
+  for i in [args.t..args.t2] when i < engine.num_frames
+    for trade in (engine.frame(i) or [])
       observations += 1
       weighted_dev += trade.amount * (trade.rate - weighted_mean) * (trade.rate - weighted_mean)
       total_volume += trade.amount 
@@ -197,6 +201,9 @@ f.volume_adjusted_price_stddev = (engine, args) ->
     weighted_dev / weighted_mean  
   else 
     null 
+
+f.volume_adjusted_price_stddev.frames = (args) -> 
+  f.price.frames args
 
 f.upwards_vs_downwards_stddev = (engine, args) ->
   up = engine.upwards_volume_adjusted_price_stddev args 
@@ -209,7 +216,7 @@ f.upwards_vs_downwards_stddev = (engine, args) ->
 
   should_continue = weight < 1 && check_history_continuation(engine, t, weight)
   if should_continue
-    p2 = engine.price
+    p2 = engine.upwards_vs_downwards_stddev
       t: t + 1
       t2: t2 + 1
       weight: weight 
@@ -218,6 +225,16 @@ f.upwards_vs_downwards_stddev = (engine, args) ->
 
   p
 
+f.upwards_vs_downwards_stddev.frames = (args) -> 
+  t = args.t or 0
+  t2 = args.t2 or t 
+  weight = args.weight or 1
+
+  f.upwards_volume_adjusted_price_stddev.frames
+    t: frames_for_weight(weight) + t2 + 1
+
+
+
 f.upwards_volume_adjusted_price_stddev = (engine, args) -> 
 
   opening_price = engine.first_price args
@@ -225,8 +242,8 @@ f.upwards_volume_adjusted_price_stddev = (engine, args) ->
 
   amount = 0
   total = 0
-  for i in [args.t..args.t2] when i < engine.frames.length
-    for trade in (engine.frames[i] or []) when trade.rate >= opening_price
+  for i in [args.t..args.t2] when i < engine.num_frames
+    for trade in (engine.frame(i) or []) when trade.rate >= opening_price
       amount += trade.amount
       total += trade.total 
 
@@ -239,8 +256,8 @@ f.upwards_volume_adjusted_price_stddev = (engine, args) ->
   observations = 0 
   total_volume = 0
 
-  for i in [args.t..args.t2] when i < engine.frames.length
-    for trade in (engine.frames[i] or []) when trade.rate >= opening_price
+  for i in [args.t..args.t2] when i < engine.num_frames
+    for trade in (engine.frame(i) or []) when trade.rate >= opening_price
       observations += 1
       weighted_dev += trade.amount * (trade.rate - weighted_mean) * (trade.rate - weighted_mean)
       total_volume += trade.amount 
@@ -258,8 +275,8 @@ f.downwards_volume_adjusted_price_stddev = (engine, args) ->
 
   amount = 0
   total = 0
-  for i in [args.t..args.t2] when i < engine.frames.length
-    for trade in (engine.frames[i] or []) when trade.rate <= opening_price
+  for i in [args.t..args.t2] when i < engine.num_frames
+    for trade in (engine.frame(i) or []) when trade.rate <= opening_price
       amount += trade.amount
       total += trade.total 
 
@@ -271,8 +288,8 @@ f.downwards_volume_adjusted_price_stddev = (engine, args) ->
   observations = 0 
   total_volume = 0
 
-  for i in [args.t..args.t2] when i < engine.frames.length
-    for trade in (engine.frames[i] or []) when trade.rate <= opening_price
+  for i in [args.t..args.t2] when i < engine.num_frames
+    for trade in (engine.frame(i) or []) when trade.rate <= opening_price
       observations += 1
       weighted_dev += trade.amount * (trade.rate - weighted_mean) * (trade.rate - weighted_mean)
       total_volume += trade.amount 
@@ -284,12 +301,17 @@ f.downwards_volume_adjusted_price_stddev = (engine, args) ->
   else 
     0 
 
+f.upwards_volume_adjusted_price_stddev.frames = f.downwards_volume_adjusted_price_stddev.frames = (args) ->
+  2 + Math.max(engine.first_price.frames(args), (args.t2 or args.t or 0))
+
 f.stddev_by_volume = (engine, args) -> 
   volume = engine.volume args 
   stddev = engine.volume_adjusted_price_stddev args 
 
   stddev / (volume + 1)
 
+f.stddev_by_volume.frames = (args) -> 
+  Math.max engine.volume.frames(args), engine.volume_adjusted_price_stddev(args)
 
 
 # velocity is derivative of price
@@ -403,6 +425,11 @@ f.RSI = (engine, args) ->
 
   RSI
 
+f.RSI.frames = (args) -> 
+  t = args.t + Math.ceil(1 / args.weight)
+  alpha = 1
+  f.price.frames({t: t + frames_for_weight(alpha), weight: args.weight})) + 1
+           
 
 
 f.MACD_signal = (engine, args) -> 
@@ -454,8 +481,11 @@ f.MACD.frames = f.MACD_signal.frames = (args) ->
 f.DI_plus = (engine, args) -> 
   alpha = args.weight or 1
 
+  # t2t = Date.now() if config.log
   ATR = engine.ATR({t: args.t, weight: alpha})
   v = 100 * engine.DM_plus({t: args.t})
+  # by_feature.DI_plus ?= 0
+  # by_feature.DI_plus -= Date.now() - t2t if t_?
 
   if v / ATR == Infinity
     v = 0
@@ -471,8 +501,11 @@ f.DI_plus = (engine, args) ->
 f.DI_minus = (engine, args) -> 
   alpha = args.weight or 1
 
+  # t2t = Date.now() if config.log
   ATR = engine.ATR({t: args.t, weight: alpha})
   v = 100 * engine.DM_minus({t: args.t})
+  # by_feature.DI_minus ?= 0
+  # by_feature.DI_minus -= Date.now() - t2t if t_?
 
   if v / ATR == Infinity
     v = 0
@@ -499,13 +532,19 @@ f.DM_plus = (engine, args) ->
   p = args.t
   alpha = args.weight or 1
 
+  # t2t = Date.now() if config.log
   cur_high = engine.max_price({t: p})
   prev_high = engine.max_price({t: p + 1})
+  cur_low = engine.min_price({t: p})
+  prev_low = engine.min_price({t: p + 1})
+
+  # by_feature.DM_plus ?= 0
+  # by_feature.DM_plus -= Date.now() - t2t if t_?
+
+
   dir_high = cur_high - prev_high
   dir_high = 0 if dir_high < 0 
 
-  cur_low = engine.min_price({t: p})
-  prev_low = engine.min_price({t: p + 1})
   dir_low = prev_low - cur_low
   dir_low = 0 if dir_low < 0 
 
@@ -522,13 +561,18 @@ f.DM_minus = (engine, args) ->
   p = args.t
   alpha = args.weight or 1
 
+  # t2t = Date.now() if config.log
   cur_high = engine.max_price({t: p})
   prev_high = engine.max_price({t: p + 1})
-  dir_high = cur_high - prev_high
-  dir_high = 0 if dir_high < 0 
-
   cur_low = engine.min_price({t: p})
   prev_low = engine.min_price({t: p + 1})
+
+  # by_feature.DM_minus ?= 0
+  # by_feature.DM_minus -= Date.now() - t2t if t_?
+
+
+  dir_high = cur_high - prev_high
+  dir_high = 0 if dir_high < 0 
   dir_low = prev_low - cur_low
   dir_low = 0 if dir_low < 0 
 
@@ -542,10 +586,7 @@ f.DM_minus = (engine, args) ->
 
 
 f.DM_plus.frames = f.DM_minus.frames = (args) -> 
-  # Math.max f.max_price.frames({t: args.t + 1}), \
-  #          frames_for_weight((args.weight or 1))
-
-  Math.max f.max_price.frames
+  f.max_price.frames
     t: (args.t or 0) + 1 + frames_for_weight(args.weight or 1)
            
 
@@ -554,8 +595,14 @@ f.DM_plus.frames = f.DM_minus.frames = (args) ->
 f.ATR = (engine, args) -> 
   p = args.t
 
+  # t2t = Date.now() if config.log
+
   cur_high = engine.max_price({t: p})
   cur_low = engine.min_price({t: p})
+
+  # by_feature.ATR ?= 0
+  # by_feature.ATR -= Date.now() - t2t if t_?
+
 
   tr = Math.abs cur_high - cur_low
 
@@ -569,10 +616,9 @@ f.ATR = (engine, args) ->
   tr
 
 f.ATR.frames = (args) ->
-  # Math.max f.max_price.frames({t: args.t}), \
-  #          frames_for_weight((args.weight or 1))
-  Math.max f.max_price.frames
+  f.max_price.frames
     t: (args.t or 0) + frames_for_weight(args.weight or 1)
+
 
 
 # average directional index
@@ -595,6 +641,11 @@ f.ADX = (engine, args) ->
       t: args.t + 1
       weight: args.weight 
     ADX = Math.weighted_average ADX, adx2, alpha 
-
   ADX
+
+f.ADX.frames = (args) ->
+  alpha = args.weight
+  t = args.t or 0
+  f.DI_plus.frames({t: t + frames_for_weight(alpha)}) + 1
+           
 

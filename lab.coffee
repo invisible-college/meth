@@ -30,13 +30,10 @@ simulate = (ts, callback) ->
 
   global.t_ = 
     qtick: 0 
-    # feat_calc: 0 
     hustle: 0 
+    exec: 0
     feature_tick: 0 
-    #quant: 0 
-    #exec: 0 
     eval_pos: 0 
-    #create_pos: 0 
     handle_new: 0 
     handle_open: 0
     balance: 0
@@ -55,8 +52,8 @@ simulate = (ts, callback) ->
 
   tick.time = ts - config.simulation_width
 
-  start_idx = history.trades.length - 1
-  end_idx = start_idx
+  #start_idx = history.trades.length - 1
+  end_idx = history.trades.length - 1
   for end_idx in [end_idx..0] by -1
     if history.trades[end_idx].date > tick.time
       end_idx += 1        
@@ -179,32 +176,23 @@ simulate = (ts, callback) ->
 
     ###########################
     # Find trades that we care about this tick. history.trades is sorted newest first
-    #zzz = Date.now()    
-    while start_idx >= 0
-      if history.trades[start_idx].date > start || start_idx < 0
-        start_idx += 1
-        break 
-
-      start_idx -= 1
-
+    zzz = Date.now()    
     while end_idx >= 0 
       if history.trades[end_idx].date > tick.time  || end_idx < 0 
         end_idx += 1 
         break
       end_idx -= 1
 
-    console.assert start_idx < history.trades.length, {message: 'starting wrong!', start_idx: start_idx, trades: history.trades.length}
+    t_.x += Date.now() - zzz
     console.assert end_idx < history.trades.length, {message: 'ending wrong!', end_idx: end_idx, trades: history.trades.length}
+    
     ############################
-
 
     simulation_done = tick.time > ts - config.tick_interval * 10
 
     ######################
     #### Accounting
-    dealers_with_open = []
-    for dealer, positions of open_positions when positions.length > 0 
-      dealers_with_open.push dealer
+    dealers_with_open = (dealer for dealer,positions of open_positions when positions.length > 0)
 
     if dealers_with_open.length > 0 
       # check if any positions have subsequently closed
@@ -219,36 +207,28 @@ simulate = (ts, callback) ->
 
 
 
-    if !simulation_done && end_idx != start_idx
-
-      ######################
-      #### Get relevant trades
-      trades = history.trades.slice(end_idx, start_idx)
-      #t_.quant += Date.now() - zzz
+    if !simulation_done
 
       ######################
       #### Main call. Where the action is. 
-      pusher.hustle balance, trades
+      #pusher.hustle balance, trades
+      pusher.hustle balance, end_idx
       ######################
-
-
-
 
     if simulation_done
       return end()
 
 
-
-
     ####################
     #### Efficiency measures
+    xxxx = Date.now()
     if ticks % Math.round(50000 / (config.tick_interval / 60)) == 1 && global.gc
-      xxxx = Date.now()
       global.gc()
-      t_.gc += Date.now() - xxxx
 
     if ticks % 100 == 99
       purge_position_status()
+
+    t_.gc += Date.now() - xxxx
     ####################
 
     #####################
@@ -728,7 +708,7 @@ lab = module.exports =
       runs.push 
         end: end
         simulation_width: length
-        name: "#{((now() - end) / (7 * 24 * 60 * 60)).toFixed(0)} weeks ago #{conf.exchange} #{conf.c1}x#{conf.c2}"
+        name: "l#{((now() - end) / (7 * 24 * 60 * 60)).toFixed(0)} weeks ago #{conf.exchange} #{conf.c1}x#{conf.c2}"
 
       end -= conf.offset
 
@@ -746,7 +726,7 @@ lab = module.exports =
         fname = "logs/#{conf.log_results or config.log_results}.txt"        
         if fs.existsSync(fname)
           from_file = fs.readFileSync(fname, 'utf8')
-          already_run = from_file.indexOf(conf.name) > -1
+          already_run = !!from_file.match(conf.name)
 
         if already_run
           console.log "Skipping because it has already run: #{time.name}"
