@@ -38,7 +38,7 @@ if resimulate
 
   pusher.learn_strategy "balancer", strategies.pure_rebalance, rebalancers
 
-  pusher.learn_strategy 'price', strategizer.series.price, [strategizer.series.defaults] # we'll also track the price feature
+  pusher.learn_strategy 'price', series.price, [series.defaults] # we'll also track the price feature
 
   lab.experiment
     c1: 'USD'

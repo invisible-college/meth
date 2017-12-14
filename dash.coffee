@@ -390,7 +390,11 @@ dom.TIME_SERIES = ->
   plots = Object.keys plot_settings
   diff = get_differentiating_parameters()
 
-  params = Object.keys diff[Object.keys(diff)[0]].variables
+  diff_params = Object.keys(diff)
+  if diff_params.length > 0 
+    params = Object.keys diff[diff_params[0]].variables
+  else 
+    params = []
 
   if !@local.enabled_features?
     @local.enabled_features = {}
@@ -596,8 +600,6 @@ dom.TIME_SERIES.refresh = ->
     dates = (p.created * 1000 for p in pnts)
     series_dat = (p.entry.rate for p in pnts)
 
-
-
     axdef = "yaxis#{axis_counter}"
     anchor = "y#{axis_counter}"
     axis_map[feature] = {axdef, anchor}
@@ -612,7 +614,7 @@ dom.TIME_SERIES.refresh = ->
       line: 
         width: 1
 
-    if series_dat[0].exit 
+    if series_dat[0]?.exit 
       data.push 
         name: feature + 'low'
         type: 'scattergl'

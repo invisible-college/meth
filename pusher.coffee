@@ -81,6 +81,7 @@ learn_strategy = (name, teacher, strat_dealers) ->
 
 
 init = ({history, clear_all_positions, take_position, cancel_unfilled, update_exit}) -> 
+  global.history = history
   for name in get_dealers() 
     dealer_data = from_cache name
     save dealer_data
@@ -139,9 +140,7 @@ reset_open = ->
 
 
 
-find_opportunities = (trade_history, exchange_fee, balance) -> 
-  if trade_history.length == 0 
-    return [] 
+find_opportunities = (trade_idx, exchange_fee, balance) -> 
 
   console.assert tick?.time?,
     message: "tick.time is not defined!"
@@ -166,8 +165,8 @@ find_opportunities = (trade_history, exchange_fee, balance) ->
     yyy = Date.now()
     proceed = true 
     for resolution, engine of dealer.features when engine.now != tick.time
-      proceed &&= engine.tick trade_history
-    return if !proceed
+      proceed &&= engine.tick trade_idx
+    continue if !proceed
     t_.feature_tick += Date.now() - yyy if t_?
 
     
@@ -728,13 +727,13 @@ action_priorities =
   cancel_unfilled: 3
   force_cancel: 4
 
-hustle = (balance, trades) -> 
+hustle = (balance, trade_idx) -> 
   yyy = Date.now()     
-  opportunities = find_opportunities trades, balance.exchange_fee, balance
+  opportunities = find_opportunities trade_idx, balance.exchange_fee, balance
   t_.hustle += Date.now() - yyy if t_?
 
   if opportunities.length > 0
-    #yyy = Date.now()
+    yyy = Date.now()
 
     # prioritize exits & cancelations over new positions
     opportunities.sort (a,b) -> action_priorities[b.action] - action_priorities[a.action]
@@ -752,7 +751,7 @@ hustle = (balance, trades) ->
     if fillable_opportunities.length > 0 
       execute_opportunities fillable_opportunities, balance.exchange_fee, balance
 
-    #t_.exec += Date.now() - yyy if t_?
+    t_.exec += Date.now() - yyy if t_?
 
 pusher = module.exports = {init, hustle, learn_strategy, destroy_position, reset_open}
 

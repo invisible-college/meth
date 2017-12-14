@@ -40,7 +40,7 @@ for thresh in [.01,.05,.1]
             rebalancers.push {thresh, frequency, rebalance_to_threshold, mark_when_changed, resolution, period}
 
 pusher.learn_strategy "balancer", strategies.pure_rebalance, rebalancers
-pusher.learn_strategy 'price', strategizer.series.price, [strategizer.series.defaults] # we'll also track the price feature
+pusher.learn_strategy 'price', series.price, [series.defaults] # we'll also track the price feature
 
 
 
