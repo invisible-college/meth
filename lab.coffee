@@ -34,8 +34,9 @@ simulate = (ts, callback) ->
     exec: 0
     feature_tick: 0 
     eval_pos: 0 
-    handle_new: 0 
-    handle_open: 0
+    check_new: 0 
+    check_exit: 0
+    check_unfilled: 0
     balance: 0
     pos_status: 0
     gc: 0
@@ -51,6 +52,7 @@ simulate = (ts, callback) ->
   start = ts - config.simulation_width - history.longest_requested_history
 
   tick.time = ts - config.simulation_width
+  tick.start = start 
 
   #start_idx = history.trades.length - 1
   end_idx = history.trades.length - 1
@@ -83,19 +85,19 @@ simulate = (ts, callback) ->
   dealers = get_dealers()
   $c2 = price_data.c2?[0].close or price_data.c1xc2[0].close
   $c1 = price_data.c1?[0].close or 1
-  #$budget_per_strategy = 100000 / dealers.length
   $budget_per_strategy = 100
   
   for dealer in dealers
     settings = from_cache(dealer).settings
 
+    budget = settings.$budget or $budget_per_strategy
     balance[dealer] = 
       balances:
-        c2: $budget_per_strategy * (settings.ratio or .5) / $c2
-        c1: $budget_per_strategy * (1 - (settings.ratio or .5) ) / $c1
+        c2: budget * (settings.ratio or .5) / $c2
+        c1: budget * (1 - (settings.ratio or .5) ) / $c1
       deposits: 
-        c2: $budget_per_strategy * (settings.ratio or .5) / $c2
-        c1: $budget_per_strategy * (1 - (settings.ratio or .5) ) / $c1        
+        c2: budget * (settings.ratio or .5) / $c2
+        c1: budget * (1 - (settings.ratio or .5) ) / $c1        
       accounted_for: 
         c1: 0
         c2: 0
@@ -118,7 +120,7 @@ simulate = (ts, callback) ->
     complete: '='
     incomplete: ' '
     width: 40
-    total: Math.ceil (time.latest - time.earliest) / config.tick_interval
+    total: Math.ceil (time.latest - time.earliest) / pusher.tick_interval
     renderThrottle: 500
 
   ticks = 0
@@ -171,8 +173,8 @@ simulate = (ts, callback) ->
 
     t = Date.now()
 
-    start += config.tick_interval
-    tick.time += config.tick_interval
+    start += pusher.tick_interval
+    tick.time += pusher.tick_interval
 
     ###########################
     # Find trades that we care about this tick. history.trades is sorted newest first
@@ -185,10 +187,10 @@ simulate = (ts, callback) ->
 
     t_.x += Date.now() - zzz
     console.assert end_idx < history.trades.length, {message: 'ending wrong!', end_idx: end_idx, trades: history.trades.length}
-    
+    tick.trade_idx = end_idx
     ############################
 
-    simulation_done = tick.time > ts - config.tick_interval * 10
+    simulation_done = tick.time > ts - pusher.tick_interval * 10
 
     ######################
     #### Accounting
@@ -212,7 +214,7 @@ simulate = (ts, callback) ->
       ######################
       #### Main call. Where the action is. 
       #pusher.hustle balance, trades
-      pusher.hustle balance, end_idx
+      pusher.hustle balance
       ######################
 
     if simulation_done
@@ -222,8 +224,8 @@ simulate = (ts, callback) ->
     ####################
     #### Efficiency measures
     xxxx = Date.now()
-    if ticks % Math.round(50000 / (config.tick_interval / 60)) == 1 && global.gc
-      global.gc()
+    # if ticks % Math.round(50000 / (pusher.tick_interval / 60)) == 1 && global.gc
+    #   global.gc()
 
     if ticks % 100 == 99
       purge_position_status()
@@ -278,7 +280,7 @@ update_balance = (balance, dealers_with_open) ->
       
       if buy
         # used or reserved for buying trade.amount eth
-        for_purchase = buy.to_fill * buy.rate
+        for_purchase = if buy.market then buy.to_fill else buy.to_fill * buy.rate
         dbtc_on_order += for_purchase
         dbtc -= for_purchase
 
@@ -334,12 +336,12 @@ update_balance = (balance, dealers_with_open) ->
             amt += f.amount 
             tot += f.total 
 
-          console.log
-            type: t.type 
-            amt: amt
-            tot: tot 
-            fills: (t.fills or []).length
-            closed: t.closed
+          # console.log
+          #   type: t.type 
+          #   amt: amt
+          #   tot: tot 
+          #   fills: (t.fills or []).length
+          #   closed: t.closed
 
           console.log t
 
@@ -380,6 +382,7 @@ update_position_status = (end_idx, balance, dealers_with_open) ->
     for pos in open 
 
       for trade in [pos.entry, pos.exit] when trade && !trade.closed
+
         ```
         key = `${pos.dealer}-${trade.created}-${trade.type}-${trade.rate}`
         ```
@@ -392,20 +395,30 @@ update_position_status = (end_idx, balance, dealers_with_open) ->
 
         if status?.fills?.length > 0 && !trade.force_canceled
           filled = 0 
-          my_rate = trade.rate 
 
           for fill in (status.fills or [])
             if fill.date > tick.time 
               break 
 
-            done = fill.amount >= trade.to_fill
+            amt = fill.amount 
+            rate = fill.rate
 
-            fill.amount = if !done then fill.amount           else trade.to_fill 
-            fill.total  = if !done then fill.amount * my_rate else trade.to_fill * my_rate
+            if trade.market && trade.type == 'buy'
+              done = amt * rate >= trade.to_fill
+              fill.total  = if !done then amt * rate else trade.to_fill
+              fill.amount = if !done then amt        else trade.to_fill / rate
+              trade.to_fill -= fill.total 
 
-            trade.to_fill -= fill.amount 
+            else 
+              done = fill.amount >= trade.to_fill || trade.market
+              fill.amount = if !done then amt        else trade.to_fill 
+              fill.total  = if !done then amt * rate else trade.to_fill * rate
+              trade.to_fill -= fill.amount 
+
+            fill.type = trade.type
             trade.fills.push fill
             filled += 1
+
           if filled > 0 
             status.fills = status.fills.slice(filled)
 
@@ -517,21 +530,34 @@ fill_order = (my_trade, end_idx, status) ->
     if (!is_sell && trade.rate <= my_rate) || \
        ( is_sell && trade.rate >= my_rate) || is_market
 
+
+      if is_market
+        if (is_sell && trade.rate < my_rate) || (!is_sell && trade.rate > my_rate)
+          rate = trade.rate 
+        else 
+          rate = my_rate 
+      else 
+        rate = my_rate 
+
       fill = 
         date: trade.date 
-        rate: if is_market then trade.rate else my_rate 
+        rate: rate
         amount: trade.amount
 
       fills.push fill
 
-      if trade.amount >= to_fill
+      if ((!is_market ||  is_sell) && trade.amount >= to_fill) || \
+         ( (is_market && !is_sell) && trade.total  >= to_fill)
         status.idx = idx
         return status
       else 
-        to_fill -= fill.amount
+        if is_market && !is_sell
+          to_fill -= fill.amount * fill.rate
+        else 
+          to_fill -= fill.amount
 
 
-    if trade.date > history.trades[end_idx].date + 30 * 60
+    if !is_market && trade.date > history.trades[end_idx].date + 30 * 60
       status.idx = idx 
       return status
 
@@ -703,21 +729,26 @@ lab = module.exports =
 
     end = conf.stop
     length = conf.length
+
+    earliest = exchange.get_earliest_trade(conf)
+
     while end - length >= conf.begin
 
-      runs.push 
-        end: end
-        simulation_width: length
-        name: "l#{((now() - end) / (7 * 24 * 60 * 60)).toFixed(0)} weeks ago #{conf.exchange} #{conf.c1}x#{conf.c2}"
+      if earliest <= end - length
+
+        runs.push 
+          end: end
+          simulation_width: length
+          name: "l#{((now() - end) / (7 * 24 * 60 * 60)).toFixed(0)} weeks ago #{conf.exchange} #{conf.c1}x#{conf.c2}"
 
       end -= conf.offset
 
     next = ->
       if runs.length == 0 
         callback?()
-        process.exit()
+        # process.exit()
       else 
-        time = runs.pop()
+        time = runs.shift()
         
         extend conf, time
         
@@ -746,7 +777,9 @@ lab = module.exports =
       key: 'config'
       exchange: 'poloniex'
       simulation: true
-      tick_interval: 60 # in seconds
+      eval_entry_every_n_seconds: 60
+      eval_exit_every_n_seconds: 60
+      eval_unfilled_every_n_seconds: 60
       simulation_width: 12 * 24 * 60 * 60
       c1: 'BTC'
       c2: 'ETH'
@@ -757,7 +790,6 @@ lab = module.exports =
       enforce_balance: true
       persist: false
       analyze: false
-      update_every_n_minutes: 20
       produce_heapdump: false
       offline: false
       auto_shorten_time: true
@@ -787,7 +819,7 @@ lab = module.exports =
     # console.log 'longest requested history:', history.longest_requested_history
     history_width = history.longest_requested_history + config.simulation_width + 24 * 60 * 60
 
-    earliest_trade_for_pair = exchange.get_earliest_trade {c1: config.c1, c2: config.c2, accounting_currency: config.accounting_currency}
+    earliest_trade_for_pair = exchange.get_earliest_trade {only_high_volume: config.only_high_volume, exchange: config.exchange, c1: config.c1, c2: config.c2, accounting_currency: config.accounting_currency}
 
     if ts > earliest_trade_for_pair
       if config.auto_shorten_time && ts - history_width < earliest_trade_for_pair
@@ -840,8 +872,8 @@ lab = module.exports =
       require './shared'
       express = require('express')
 
-
       bus.http.use('/node_modules', express.static('node_modules'))
+      bus.http.use('/node_modules', express.static('meth/node_modules'))
       bus.http.use('/meth/vendor', express.static('meth/vendor'))
 
 
@@ -887,6 +919,9 @@ lab = module.exports =
         paths = r.url.split('/')
         paths.shift() if paths[0] == ''
 
+        console.log r.url
+
+
         prefix = ''
         server = "statei://localhost:#{bus.port}"
 
@@ -919,5 +954,6 @@ lab = module.exports =
         res.send(html)
 
 
+      bus.http.use('/node_modules', express.static('node_modules'))
 
 

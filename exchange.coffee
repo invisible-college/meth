@@ -15,11 +15,11 @@ module.exports = exchange =
   # c1, c2
   get_earliest_trade: (opts) ->
     if opts.c1 != opts.accounting_currency && opts.c2 != opts.accounting_currency
-      Math.max  exchange[config.exchange].get_earliest_trade({c1: opts.c1, c2: opts.c2}), \
-                exchange[config.exchange].get_earliest_trade({c1: opts.accounting_currency, c2: opts.c1}), \
-                exchange[config.exchange].get_earliest_trade({c1: opts.accounting_currency, c2: opts.c2})
+      Math.max  exchange[opts.exchange].get_earliest_trade({only_high_volume: opts.only_high_volume, c1: opts.c1, c2: opts.c2}), \
+                exchange[opts.exchange].get_earliest_trade({only_high_volume: false, c1: opts.accounting_currency, c2: opts.c1}), \
+                exchange[opts.exchange].get_earliest_trade({only_high_volume: false, c1: opts.accounting_currency, c2: opts.c2})
     else 
-      exchange[config.exchange].get_earliest_trade({c1: opts.c1, c2: opts.c2})
+      exchange[opts.exchange].get_earliest_trade({only_high_volume: opts.only_high_volume, c1: opts.c1, c2: opts.c2})
       
   # opts: 
   #  c1, c2, start, end, period, callback
@@ -76,6 +76,7 @@ module.exports = exchange =
   #  rate 
   #  c1
   #  c2
+  #  market
   place_order: (opts, callback) -> 
     exchange[config.exchange].place_order opts, callback
 
@@ -92,6 +93,7 @@ module.exports = exchange =
   #  c1
   #  c2
   #  type
+  #  market  
   move_order: (opts, callback) ->
     exchange[config.exchange].move_order opts, callback 
 

@@ -38,8 +38,13 @@ f.volume = (engine, args) ->
   else
     v = 0
     for i in [t..t2] when i < engine.num_frames
-      for trade in (engine.frame(i) or [])
-        v += trade.amount  
+
+      fb = engine.frame_boundary(i)
+      idx = fb[0]
+      while idx < fb[1]
+        trade = history.trades[idx] 
+        v += trade.amount
+        idx += 1
 
     # cut off recursing after the impact of calculating the previous time 
     # frame's velocity is negligible. Note that this method assumes the 
@@ -78,10 +83,15 @@ f.price = (engine, args) ->
     total = 0
     num = 0
     for i in [t..t2] when i < engine.num_frames
-      for trade in (engine.frame(i) or [])
+
+      fb = engine.frame_boundary(i)
+      idx = fb[0]
+      while idx < fb[1]
+        trade = history.trades[idx] 
         amount += trade.amount
         total += trade.total 
         num++
+        idx += 1
 
     engine.price_cache[k] = [amount, total]
   else 
@@ -120,9 +130,14 @@ f.min_price = (engine, args) ->
   t2 = args.t2 or t
   min = Infinity
   for i in [t..t2] when i < engine.num_frames
-    for trade in engine.frame(i)
+
+    fb = engine.frame_boundary(i)
+    idx = fb[0]
+    while idx < fb[1]
+      trade = history.trades[idx] 
       if min > trade.rate 
         min = trade.rate 
+      idx += 1
 
   if min == Infinity
     min = engine.last_price args
@@ -135,33 +150,39 @@ f.max_price = (engine, args) ->
   max = 0
 
   for i in [t..t2] when i < engine.num_frames
-    trades = engine.frame(i)
 
-    for trade in trades
+    fb = engine.frame_boundary(i)
+    idx = fb[0]
+    while idx < fb[1]
+      trade = history.trades[idx] 
       if max < trade.rate 
         max = trade.rate 
+      idx += 1
 
+  #console.assert max == max2
   if max == 0
     max = engine.last_price args
 
-  max 
+  max
 
 f.min_price.frames = f.max_price.frames = (args) -> f.last_price.frames(args) + (args.t2 or args.t)
 
 
 f.last_price = (engine, args) -> 
   t = args.t or 0
-  engine.last_trade(t).rate
+  if engine.trades_in_frame(t) > 0
+    engine.latest_trade(t).rate
+  else 
+    engine.last_price t: args.t + 1
+
 
 f.first_price = (engine, args) -> 
   t = args.t or 0
 
-  if engine.frame(t)?.length > 0
-    frame = engine.frame(t) 
-    frame[frame.length - 1].rate
+  if engine.trades_in_frame(t) > 0
+    engine.earliest_trade(t).rate
   else 
     engine.last_price t: args.t + 1
-
 
 f.last_price.frames = f.first_price.frames = (args) -> args.t + 3
 
@@ -169,8 +190,11 @@ f.last_price.frames = f.first_price.frames = (args) -> args.t + 3
 f.price_stddev = (engine, args) -> 
   rates = []
   for i in [args.t..args.t2] when i < engine.num_frames
-    for trade in (engine.frame(i) or [])
-      rates.push trade.rate 
+    fb = engine.frame_boundary(i)
+    idx = fb[0]
+    while idx < fb[1]
+      rates.push history.trades[idx].rate
+      idx += 1
 
   if rates.length > 0 
     Math.standard_dev rates 
@@ -190,7 +214,11 @@ f.volume_adjusted_price_stddev = (engine, args) ->
   total_volume = 0
 
   for i in [args.t..args.t2] when i < engine.num_frames
-    for trade in (engine.frame(i) or [])
+    fb = engine.frame_boundary(i)
+    idx = fb[0]
+    while idx < fb[1]
+      trade = history.trades[idx] 
+      idx += 1
       observations += 1
       weighted_dev += trade.amount * (trade.rate - weighted_mean) * (trade.rate - weighted_mean)
       total_volume += trade.amount 
@@ -243,7 +271,12 @@ f.upwards_volume_adjusted_price_stddev = (engine, args) ->
   amount = 0
   total = 0
   for i in [args.t..args.t2] when i < engine.num_frames
-    for trade in (engine.frame(i) or []) when trade.rate >= opening_price
+    fb = engine.frame_boundary(i)
+    idx = fb[0]
+    while idx < fb[1]
+      trade = history.trades[idx] 
+      idx += 1
+      continue if trade.rate < opening_price
       amount += trade.amount
       total += trade.total 
 
@@ -257,7 +290,12 @@ f.upwards_volume_adjusted_price_stddev = (engine, args) ->
   total_volume = 0
 
   for i in [args.t..args.t2] when i < engine.num_frames
-    for trade in (engine.frame(i) or []) when trade.rate >= opening_price
+    fb = engine.frame_boundary(i)
+    idx = fb[0]
+    while idx < fb[1]
+      trade = history.trades[idx] 
+      idx += 1
+      continue if trade.rate < opening_price
       observations += 1
       weighted_dev += trade.amount * (trade.rate - weighted_mean) * (trade.rate - weighted_mean)
       total_volume += trade.amount 
@@ -276,7 +314,12 @@ f.downwards_volume_adjusted_price_stddev = (engine, args) ->
   amount = 0
   total = 0
   for i in [args.t..args.t2] when i < engine.num_frames
-    for trade in (engine.frame(i) or []) when trade.rate <= opening_price
+    fb = engine.frame_boundary(i)
+    idx = fb[0]
+    while idx < fb[1]
+      trade = history.trades[idx] 
+      idx += 1
+      continue if trade.rate > opening_price
       amount += trade.amount
       total += trade.total 
 
@@ -289,7 +332,12 @@ f.downwards_volume_adjusted_price_stddev = (engine, args) ->
   total_volume = 0
 
   for i in [args.t..args.t2] when i < engine.num_frames
-    for trade in (engine.frame(i) or []) when trade.rate <= opening_price
+    fb = engine.frame_boundary(i)
+    idx = fb[0]
+    while idx < fb[1]
+      trade = history.trades[idx] 
+      idx += 1
+      continue if trade.rate > opening_price
       observations += 1
       weighted_dev += trade.amount * (trade.rate - weighted_mean) * (trade.rate - weighted_mean)
       total_volume += trade.amount 
@@ -428,7 +476,7 @@ f.RSI = (engine, args) ->
 f.RSI.frames = (args) -> 
   t = args.t + Math.ceil(1 / args.weight)
   alpha = 1
-  f.price.frames({t: t + frames_for_weight(alpha), weight: args.weight})) + 1
+  f.price.frames({t: t + frames_for_weight(alpha), weight: args.weight}) + 1
            
 
 

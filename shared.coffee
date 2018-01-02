@@ -309,3 +309,13 @@ extend Math,
 
     data 
 
+  greatest_common_divisor: (nums) -> 
+    gcd2 = (a,b) -> if !b then a else gcd2(b, a % b)
+  
+    result = nums[0]
+    for num,idx in nums when idx > 0
+      result = gcd2 result, num
+
+    result
+
+

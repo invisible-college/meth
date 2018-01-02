@@ -7,16 +7,15 @@
   "license": "MIT",
   "dependencies": {
     "statebus": ">=5",
-    "crypto": "latest",    
-    "request": "latest", 
-    "querystring": "latest",           
-    "ws": "latest",           
+    "crypto": "latest",
+    "request": "latest",
+    "querystring": "latest",
+    "ws": "latest",
     "coffee-script": "^1.11.1",
     "express": "^4.15.3",
     "progress": "latest",
     "mathjs": "latest",
     "heapdump": "latest",
     "gdax": "latest"
-
   }
 }

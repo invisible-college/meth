@@ -28,8 +28,6 @@ write_trades = (hour, trades, c1, c2) ->
 get_trades = (client, c1, c2, hours, after, stop_when_cached, callback, stop_after_hour) -> 
   cb = (error, response, data) -> 
     i += 1 
-
-
     if error || !data || data.message || !response
       console.error {message: 'error downloading trades! trying again', error: error, data: data}
       setTimeout ->
@@ -190,10 +188,26 @@ find_page_for_hour = (opts, callback) ->
 # this will currently only work when less then 200 candles are to be returned.
 # e.g. when period is daily, this means 200 days of chart data.
 # should be pretty easy to make work with more: 
+
+getProductHistoricRates = ({start, end, granularity}, cb) ->
+  request = require('request')
+  request 
+    qs: 
+      start: start
+      end: end
+      granularity: granularity 
+    method: 'GET'
+    uri: 'https://api.gdax.com/products/BTC-USD/candles'
+    headers:
+       'User-Agent': 'gdax-node-client'
+       Accept: 'application/json'
+       'Content-Type': 'application/json' 
+  , cb
+
 load_chart_data = (client, opts, callback) -> 
 
   granularity = opts.period - 1
-  chunk_size = granularity * 100  # load at most 20 candles per
+  chunk_size = granularity * 10000  # load at most 20 candles per
 
   all_data = []
   
@@ -206,10 +220,13 @@ load_chart_data = (client, opts, callback) ->
     end = new Date( Math.min(opts.end, end_sec) * 1000).toISOString()
 
     cb = (error, response, data) ->
+      #data = JSON.parse(data) if data
+      #console.log data
       if error || !data || data.message
         console.error {message: 'error getting chart data, trying again', error: error, message: data?.message}
         setTimeout -> 
           client.getProductHistoricRates {start, end, granularity}, cb
+
         , 1000
         return 
         
@@ -224,7 +241,6 @@ load_chart_data = (client, opts, callback) ->
         
       else  
         callback [].concat all_data...
-
 
     client.getProductHistoricRates {start, end, granularity}, cb
 
@@ -254,17 +270,33 @@ module.exports = gdax =
     pair = "#{opts.c2}-#{opts.c1}"
 
     earliest_trades = 
-      "BTC-USD": 1417375595
-      "ETH-USD": 1463512661
-      "LTC-USD": 1471374970 
+      "BTC-USD": 1417375595 
+      "ETH-USD": 1464066000
+      "LTC-USD": 1475690400 
       "ETH-BTC": 1463512661
-      "LTC-BTC": 1471374970
+      "LTC-BTC": 1475690400
+
+    # time after which a pair has sustained 1-week exponentially 
+    # weighted moving average of hourly USD transacted > $50k
+    high_volume = 
+      "BTC-USD": 1422662400 # after 1/31/15
+      "ETH-USD": 1487203200 # after 2/16/17
+      "LTC-USD": 1491091200 # after 4/2/17
+      "ETH-BTC": 1489449600 # after 3/14/17
+      "LTC-BTC": 1493769600 # after 5/3/17
 
 
-    console.assert earliest_trades[pair],
-      msg: "earliest trade for #{pair} on not listed in GDAX's get_earliest_trade method" 
 
-    return earliest_trades[pair]
+    if opts.only_high_volume
+      console.assert high_volume[pair],
+        msg: "high_volume for #{pair} on not listed in POLONIEX's get_earliest_trade method" 
+
+      return high_volume[pair]
+    else
+      console.assert earliest_trades[pair],
+        msg: "earliest trade for #{pair} on not listed in POLONIEX's get_earliest_trade method" 
+
+      return earliest_trades[pair]
 
 
   get_chart_data: (opts, callback) -> 
@@ -441,10 +473,12 @@ module.exports = gdax =
 
     queued_request opts.type, 
       price: opts.rate
-      size: opts.amount
+      size: if !(opts.market && opts.type == 'buy') then opts.amount
+      funds: if opts.market && opts.type == 'buy' then parseFloat((Math.floor(opts.amount * opts.rate * 1000000) / 1000000).toFixed(6))
       product_id: "#{opts.c2}-#{opts.c1}"
+      type: if opts.market then 'market' else 'limit'
     , (data) -> 
-      callback order_id: data.id 
+      callback order_id: data.id
 
   cancel_order: (opts, callback) -> 
     queued_request 'cancelOrder', opts.order_id, callback 
@@ -460,6 +494,7 @@ module.exports = gdax =
         amount: opts.amount
         c1: opts.c1
         c2: opts.c2
+        market: opts.market
       , callback
 
 

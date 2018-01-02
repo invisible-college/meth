@@ -1,6 +1,6 @@
 # Trade live on an exchange 
 
-strategizer = require '../strategizer'
+series = require '../strategizer'
 strategies = require './strategies'
 
 
@@ -47,11 +47,12 @@ pusher.learn_strategy 'price', series.price, [series.defaults] # we'll also trac
 
 operation.start
   exchange: exchange
-  tick_interval: 60 * .2
+  eval_entry_every_n_seconds: 60
+  eval_exit_every_n_seconds: 60
+  eval_unfilled_every_n_seconds: 60
   c1: 'BTC'
   c2: 'ETH'
   c1_budget: 0.005    # set your budget!!!
   c2_budget: 0.1  
   accounting_currency: accounting_currency
-  update_every_n_minutes: 5
   enforce_balance: true

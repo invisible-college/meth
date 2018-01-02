@@ -42,7 +42,7 @@ one_tick = ->
           if !laggy
             balance = from_cache('balances')
             pusher.reset_open()
-            pusher.hustle balance, history.trades
+            pusher.hustle balance
 
           # wait for the trades or cancelations to complete
           i = setInterval ->
@@ -153,6 +153,7 @@ update_position_status = (callback) ->
                     already_processed = old_fill.fill_id == new_fill.fill_id
                     break if already_processed
                   continue if already_processed
+                  new_fill.type = t.type
                   t.fills.push new_fill
 
 
@@ -161,7 +162,10 @@ update_position_status = (callback) ->
                 t.to_fill = 0 
                 t.amount = Math.summation (f.amount for f in t.fills)
               else 
-                t.to_fill = t.amount - Math.summation (f.amount for f in t.fills)
+                if t.market && t.type == 'buy'
+                  t.to_fill = t.total - Math.summation (f.total for f in t.fills)
+                else 
+                  t.to_fill = t.amount - Math.summation (f.amount for f in t.fills)
 
 
             for order_id in t.orders
@@ -247,15 +251,16 @@ take_position = (pos, callback) ->
 
   error = false
   for trade, idx in trades
+    amount = trade.to_fill 
 
     exchange.place_order
       type: trade.type
-      amount: trade.to_fill
+      amount: amount
       rate: trade.rate
       c1: config.c1 
       c2: config.c2
+      market: trade.market
     , do (trade, idx) -> (result) ->
-
 
       trades_left--
 
@@ -265,8 +270,6 @@ take_position = (pos, callback) ->
         console.log "GOT ERROR TAKING POSITION", {pos, trades_left, err}
         
       else 
-
-
         trade.current_order = result.order_id
         trade.orders ||= []
         if trade.current_order && trade.current_order not in trade.orders 
@@ -279,8 +282,10 @@ take_position = (pos, callback) ->
         bus.save pos if pos.key
 
 
-update_exit = (opts, callback) -> 
+update_trade = (opts, callback) -> 
   {pos, trade, rate, amount} = opts 
+
+  console.assert !trade.market
 
   cb = (result) -> 
     if result.error
@@ -414,7 +419,7 @@ update_account_balances = (callback) ->
 
         if buy
           # used or reserved for buying remaining eth
-          for_purchase = buy.to_fill * buy.rate
+          for_purchase = if buy.market then buy.to_fill else buy.to_fill * buy.rate
           dbtc_on_order += for_purchase
           dbtc -= for_purchase
 
@@ -509,11 +514,12 @@ operation = module.exports =
       key: 'config'
       exchange: 'poloniex'
       simulation: false
-      tick_interval: 60
+      eval_entry_every_n_seconds: 60
+      eval_exit_every_n_seconds: 60
+      eval_unfilled_every_n_seconds: 60
       c1: 'BTC'
       c2: 'ETH'
       accounting_currency: 'USDT'
-      update_every_n_minutes: 20
       enforce_balance: true
 
     bus.save config 
@@ -524,7 +530,7 @@ operation = module.exports =
 
     console.log 'STARTING METH'
 
-    pusher.init {history, take_position, cancel_unfilled, update_exit}
+    pusher.init {history, take_position, cancel_unfilled, update_trade}
 
     console.log "...updating deposit history"
 
@@ -554,7 +560,7 @@ operation = module.exports =
                 console.log "...hustling!"
 
                 one_tick()
-                setInterval one_tick, config.tick_interval * 1000
+                setInterval one_tick, pusher.tick_interval * 1000
 
   setup: ({port, db_name, clear_old}) -> 
     global.pointerify = true

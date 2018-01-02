@@ -1,6 +1,6 @@
 # Backtest your strategies
 
-strategizer = require '../strategizer'
+series = require '../strategizer'
 strategies = require './strategies'
 
 lab = require('../lab') # defines pusher
@@ -48,10 +48,11 @@ if resimulate
     simulation_width:  24 * 7 * 24 * 60 * 60 # backtest over 24 week period
     end:  Date.now() / 1000 - 0 * 7 * 24 * 60 * 60 # ending now
     exchange_fee: xfee # exchange fee (adjust based on your estimate of maker/taker proportions)
-    tick_interval: 60 * 1 # how often to assess new opportunities 
+    eval_entry_every_n_seconds: 60
+    eval_exit_every_n_seconds: 60
+    eval_unfilled_every_n_seconds: 60
     enforce_balance: true
     log: true
-    update_every_n_minutes: 5
     offline: false
 
 

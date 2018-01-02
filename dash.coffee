@@ -348,6 +348,11 @@ feature_settings =
   '/price-dealer':
     name: 'Price' 
 
+  '/USD_volume-dealer':
+    name: 'USD volume traded'
+    tickformat: "+$,.0f"
+
+
 plot_settings = 
   trades: 
     name: 'Trades'
@@ -596,6 +601,7 @@ dom.TIME_SERIES.refresh = ->
   for feature, enabled of @local.enabled_features
     continue if !enabled
 
+
     pnts = cached_positions[feature] or []
     dates = (p.created * 1000 for p in pnts)
     series_dat = (p.entry.rate for p in pnts)
@@ -609,11 +615,15 @@ dom.TIME_SERIES.refresh = ->
       type: 'scattergl'
       x: dates
       y: series_dat
+      mode: 'markers'
       yaxis: anchor
       hoverinfo: "y+name"
+      hoverformat: feature_settings[feature]?.tickformat
       line: 
         width: 1
-
+      marker:         
+        size: 1
+        
     if series_dat[0]?.exit 
       data.push 
         name: feature + 'low'
@@ -622,12 +632,14 @@ dom.TIME_SERIES.refresh = ->
         y: (p.exit.rate for p in pnts)
         yaxis: anchor
         hoverinfo: "y+name"
+        hoverformat: feature_settings[feature]?.tickformat
         line: 
           width: 1
 
 
     layout[axdef] = 
-      tickformat: ',.4r'
+      tickformat: feature_settings[feature]?.tickformat or ',.4r'
+      hoverformat: feature_settings[feature]?.tickformat or ',.4r'
       anchor: 'x'
       overlaying: 'y'
       side: 'right'

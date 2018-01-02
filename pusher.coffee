@@ -62,8 +62,8 @@ learn_strategy = (name, teacher, strat_dealers) ->
 
     dealer_data.settings = dealer_conf
 
-    console.assert dealer_data.settings.series || dealer.evaluate_open_position?, 
-      message: 'Dealer has no evaluate_open_position method defined'
+    console.assert dealer_data.settings.series || dealer.eval_unfilled_trades?, 
+      message: 'Dealer has no eval_unfilled_trades method defined'
       dealer: name 
 
     dealers[key] = dealer 
@@ -89,8 +89,11 @@ init = ({history, clear_all_positions, take_position, cancel_unfilled, update_ex
   reset_open()
   clear_positions() if clear_all_positions
 
-  pusher.dealer_last_updated = {}
+  pusher.last_checked_new_position = {}
+  pusher.last_checked_exit = {}
+  pusher.last_checked_unfilled = {}
 
+  tick_interval = null
   for name in get_all_actors() 
     dealer_data = from_cache name
     dealer = dealers[name]
@@ -108,7 +111,26 @@ init = ({history, clear_all_positions, take_position, cancel_unfilled, update_ex
       dealer.features ?= {}
       dealer.features[resolution] = engine
 
-    pusher.dealer_last_updated[name] = 0
+    pusher.last_checked_new_position[name] = 0
+    pusher.last_checked_exit[name] = 0
+    pusher.last_checked_unfilled[name] = 0
+
+
+    intervals = [   
+      dealer_data.settings.eval_entry_every_n_seconds or config.eval_entry_every_n_seconds
+      dealer_data.settings.eval_exit_every_n_seconds or config.eval_exit_every_n_seconds
+      dealer_data.settings.eval_unfilled_every_n_seconds or config.eval_unfilled_every_n_seconds
+    ]
+
+    if !tick_interval
+      tick_interval = intervals[0]
+
+    intervals.push tick_interval
+    tick_interval = Math.greatest_common_divisor intervals
+
+
+
+
 
   history_buffer = (e.num_frames * res + 1 for res, e of feature_engine.resolutions)
   history_buffer = Math.max.apply null, history_buffer
@@ -119,7 +141,8 @@ init = ({history, clear_all_positions, take_position, cancel_unfilled, update_ex
   pusher.cancel_unfilled = cancel_unfilled if cancel_unfilled
   pusher.update_exit = update_exit if update_exit
 
-
+  console.assert tick_interval
+  pusher.tick_interval = tick_interval
 
 
 
@@ -140,7 +163,7 @@ reset_open = ->
 
 
 
-find_opportunities = (trade_idx, exchange_fee, balance) -> 
+find_opportunities = (exchange_fee, balance) -> 
 
   console.assert tick?.time?,
     message: "tick.time is not defined!"
@@ -149,36 +172,31 @@ find_opportunities = (trade_idx, exchange_fee, balance) ->
   # identify new positions and changes to old positions (opportunities)
   opportunities = []
 
-  for name in get_all_actors()
+  all_actors = get_all_actors()
+
+
+  ################################
+  ## 1. Identify new opportunities
+  for name in all_actors
     dealer_data = from_cache name
     settings = dealer_data.settings
-
-    update_every_n_minutes = settings.update_every_n_minutes or config.update_every_n_minutes
-
-    if tick.time - pusher.dealer_last_updated < update_every_n_minutes * 60
-      continue 
-
-    pusher.dealer_last_updated[name] = tick.time
-
     dealer = dealers[name]
 
-    yyy = Date.now()
-    proceed = true 
-    for resolution, engine of dealer.features when engine.now != tick.time
-      proceed &&= engine.tick trade_idx
-    continue if !proceed
-    t_.feature_tick += Date.now() - yyy if t_?
+    eval_entry_every_n_seconds = settings.eval_entry_every_n_seconds or config.eval_entry_every_n_seconds
+    if tick.time - pusher.last_checked_new_position[name] < eval_entry_every_n_seconds
+      continue 
+    pusher.last_checked_new_position[name] = tick.time
 
     
     zzz = Date.now()
 
     # A strategy can't have too many positions on the books at once...
-    if settings.series || settings.never_exits || open_positions[name].length < settings.max_open_positions
+    if settings.series || settings.never_exits || open_positions[name]?.length < settings.max_open_positions
 
     
       yyy = Date.now()
 
-      spec = dealer.evaluate_new_position  
+      spec = dealer.eval_whether_to_enter_new_position  
         dealer: name
         open_positions: open_positions[name]
         balance: balance      
@@ -195,57 +213,39 @@ find_opportunities = (trade_idx, exchange_fee, balance) ->
         found_match = false 
 
         if valid
-          
+          sell = if position.entry.type == 'sell' then position.entry else position.exit
+          buy  = if position.entry.type == 'buy'  then position.entry else position.exit
 
-          if !position.series_data && settings.never_exits
-            candidates = (p for p in open_positions[name] when !p.exit && p.entry.type != position.entry.type)
+          opportunities.push 
+            pos: position
+            action: 'create'
+            required_c2: if sell then sell.amount
+            required_c1: if  buy then buy.amount * buy.rate
 
-            if candidates.length > 1
-              candidates.sort( (a,b) -> b.created - a.created )
-
-            pos = candidates.pop()
-
-            if pos 
-              rate = position.entry.rate
-              amount = position.entry.amount or pos.entry.amount
-              total_available = if position.entry.type == 'buy' 
-                                  balance[pos.dealer].balances.c1 / rate
-                                else 
-                                  balance[pos.dealer].balances.c2
-
-              amount = Math.min amount, total_available
-
-              opportunities.push
-                pos: pos
-                action: 'exit'
-                rate: rate
-                amount: amount
-                required_c2: if position.entry.type == 'sell' then amount
-                required_c1: if position.entry.type == 'buy'  then amount * rate
-                market: if pos.entry.market then true 
-
-              found_match = pos 
-
-
-          if !found_match
-            sell = if position.entry.type == 'sell' then position.entry else position.exit
-            buy  = if position.entry.type == 'buy'  then position.entry else position.exit
-
-            opportunities.push 
-              pos: position
-              action: 'create'
-              required_c2: if sell then sell.amount
-              required_c1: if  buy then buy.amount * buy.rate
-
-    t_.handle_new += Date.now() - zzz if t_?
+    t_.check_new += Date.now() - zzz if t_?
 
     continue if dealer_data.settings.series
+
+  ##########################################
+  ## 2. Handle positions that haven't exited
+
+  for name in all_actors when open_positions[name]?.length > 0 
+    dealer_data = from_cache name
+    settings = dealer_data.settings
+    dealer = dealers[name]
+
+    continue if settings.series || settings.never_exits
+
+    eval_exit_every_n_seconds = settings.eval_exit_every_n_seconds or config.eval_exit_every_n_seconds
+    if tick.time - pusher.last_checked_exit[name] < eval_exit_every_n_seconds
+      continue 
+    pusher.last_checked_exit[name] = tick.time
 
     # see if any open positions want to exit
     yyy = Date.now()      
 
-    for pos in open_positions[name] when !pos.series_data && found_match != pos
-      opportunity = dealer.evaluate_open_position
+    for pos in open_positions[name] when !pos.exit && !pos.series_data
+      opportunity = dealer.eval_whether_to_exit_position
         position: pos 
         dealer: name
         open_positions: open_positions[name]
@@ -261,7 +261,42 @@ find_opportunities = (trade_idx, exchange_fee, balance) ->
         opportunity.pos = pos 
         opportunities.push opportunity
 
-    t_.handle_open += Date.now() - yyy if t_?
+    t_.check_exit += Date.now() - yyy if t_?
+
+
+  ##########################################
+  ## 3. Handle unfilled orders
+  for name in all_actors when open_positions[name]?.length > 0
+    dealer_data = from_cache name
+    settings = dealer_data.settings
+    dealer = dealers[name]
+
+    continue if settings.series
+
+    eval_unfilled_every_n_seconds = settings.eval_unfilled_every_n_seconds or config.eval_unfilled_every_n_seconds
+    if tick.time - pusher.last_checked_unfilled[name] < eval_unfilled_every_n_seconds
+      continue 
+    pusher.last_checked_unfilled[name] = tick.time
+
+
+    # see if any open positions want to exit
+    yyy = Date.now()      
+
+    for pos in open_positions[name] when (pos.exit && !pos.exit.closed) || (pos.entry && !pos.entry.closed)
+      opportunity = dealer.eval_unfilled_trades
+        position: pos 
+        dealer: name
+        open_positions: open_positions[name]
+        balance: balance 
+
+      if opportunity
+        opportunity.pos = pos 
+        opportunities.push opportunity
+
+    t_.check_unfilled += Date.now() - yyy if t_?
+
+
+
 
 
   if !uniq(opportunities)
@@ -302,6 +337,8 @@ execute_opportunities = (opportunities, exchange_fee, balance) ->
       when 'update_exit'
         update_exit pos, opportunity.rate, exchange_fee
 
+      when 'update_entry'
+        update_entry pos, opportunity.rate, exchange_fee
 
 
 
@@ -369,19 +406,25 @@ create_position = (spec, dealer, exchange_fee) ->
 
   if config.exchange == 'gdax' 
     for trade in [buy, sell] when trade
+      rounder = if trade.type == 'buy' then Math.ceil else Math.floor
       if config.c1 == 'USD' # can't have fractions of cents (at least on GDAX!)
-        trade.rate = parseFloat((Math.round(trade.rate * 100) / 100).toFixed(2))
+        trade.rate = parseFloat((rounder(trade.rate * 100) / 100).toFixed(2))
       else 
-        trade.rate = parseFloat((Math.round(trade.rate * 1000000) / 1000000).toFixed(6))
+        trade.rate = parseFloat((rounder(trade.rate * 1000000) / 1000000).toFixed(6))
       trade.amount = parseFloat((Math.floor(trade.amount * 1000000) / 1000000).toFixed(6))
 
-      if config.c2 == 'BTC' && trade.amount < .01
+      if config.c2 == 'BTC' && trade.amount < .0001
+        trade.market = true
+      if config.c2 == 'ETH' && trade.amount < .001
+        trade.market = true
+      if config.c2 == 'BCH' && trade.amount < .001
+        trade.market = true
+      if config.c2 == 'LTC' && trade.amount < .01
         trade.market = true
 
   if buy
     buy.type = 'buy'
-    buy.to_fill ||= buy.amount
-
+    buy.to_fill ||= if buy.market then buy.amount * buy.rate else buy.amount
   if sell 
     sell.type = 'sell'
     sell.to_fill ||= sell.amount
@@ -410,15 +453,17 @@ exit_position = ({pos, rate, exchange_fee, market_trade, amount}) ->
     amount: amount
     type: type
     rate: rate
-    to_fill: amount
+    to_fill: if market_trade && type == 'buy' then amount * rate else amount
     market: if market_trade then true 
 
   if config.exchange == 'gdax' 
     for trade in [pos.exit.rate] when trade
+      rounder = if trade.type == 'buy' then Math.ceil else Math.floor
+
       if config.c1 == 'USD' # can't have fractions of cents (at least on GDAX!)
-        trade.rate = parseFloat((Math.round(trade.rate * 100) / 100).toFixed(2))
+        trade.rate = parseFloat((rounder(trade.rate * 100) / 100).toFixed(2))
       else 
-        trade.rate = parseFloat((Math.round(trade.rate * 1000000) / 1000000).toFixed(6))
+        trade.rate = parseFloat((rounder(trade.rate * 1000000) / 1000000).toFixed(6))
       trade.amount = parseFloat((Math.floor(trade.amount * 1000000) / 1000000).toFixed(6))
 
 
@@ -478,7 +523,6 @@ update_exit = (pos, rate, exchange_fee) ->
     pos.entry = p 
 
   if config.exchange == 'gdax'
-
     if config.c1 == 'USD' # can't have fractions of cents (at least on GDAX!)
       rate = parseFloat((Math.round(rate * 100) / 100).toFixed(2))
     else 
@@ -501,6 +545,11 @@ update_exit = (pos, rate, exchange_fee) ->
       message: 'trying to move an exit on a trade that should already be closed'
       trade: pos.exit 
       fills: pos.exit.fills
+
+  if pos.exit.market 
+    console.assert false, 
+      message: 'trying to move a market exit'
+      trade: pos.exit 
 
   last_exit = pos.exit.rate 
 
@@ -539,8 +588,8 @@ update_exit = (pos, rate, exchange_fee) ->
 
       set_expected_profit pos, exchange_fee
 
-  if pusher.update_exit
-    pusher.update_exit 
+  if pusher.update_trade
+    pusher.update_trade 
       pos: pos
       trade: pos.exit
       rate: rate 
@@ -548,6 +597,79 @@ update_exit = (pos, rate, exchange_fee) ->
     , cb
   else 
     cb()
+
+
+# TODO: merge with update_exit
+update_entry = (pos, rate, exchange_fee) ->
+
+  if config.exchange == 'gdax'
+    if config.c1 == 'USD' # can't have fractions of cents (at least on GDAX!)
+      rate = parseFloat((Math.round(rate * 100) / 100).toFixed(2))
+    else 
+      rate = parseFloat((Math.round(rate * 1000000) / 1000000).toFixed(6))
+
+  if isNaN(rate) || !rate || rate == 0
+    console.assert false, 
+      message: 'Bad rate for moving exit!',
+      rate: rate 
+      pos: pos 
+
+  if pos.entry.to_fill == 0
+    console.assert false, 
+      message: 'trying to move an entry on a trade that should already be closed'
+      trade: pos.entry 
+      fills: pos.entry.fills
+
+  if pos.entry.market 
+    console.assert false, 
+      message: 'trying to move a market trade'
+      trade: pos.entry 
+
+  last_exit = pos.entry.rate 
+
+  
+  if pos.entry.type == 'buy'
+    # we need to adjust the *amount* we're buying because our buying power has changed
+    amt_purchased = 0 
+    total_sold = 0 
+    for f in (pos.entry.fills or [])
+      amt_purchased += f.amount
+      total_sold += f.total
+
+    amt_remaining = pos.entry.amount - amt_purchased    
+    total_remaining = amt_remaining * pos.entry.rate 
+    new_amount = total_remaining / rate 
+  else 
+    new_amount = pos.entry.to_fill
+
+
+  if config.exchange == 'gdax' 
+    new_amount = parseFloat((Math.floor(new_amount * 1000000) / 1000000).toFixed(6))
+
+
+  cb = (error) -> 
+    if !error 
+      if !pos.entry.reset
+        pos.entry.reset = tick.time
+
+      pos.entry.created = tick.time
+      pos.entry.rate = rate
+      if pos.entry.type == 'buy'
+        pos.entry.amount = new_amount + amt_purchased
+        pos.entry.to_fill = new_amount 
+
+      set_expected_profit pos, exchange_fee
+
+  if pusher.update_trade
+    pusher.update_trade 
+      pos: pos
+      trade: pos.entry
+      rate: rate 
+      amount: new_amount
+    , cb
+  else 
+    cb()
+
 
 
 
@@ -727,9 +849,9 @@ action_priorities =
   cancel_unfilled: 3
   force_cancel: 4
 
-hustle = (balance, trade_idx) -> 
+hustle = (balance) -> 
   yyy = Date.now()     
-  opportunities = find_opportunities trade_idx, balance.exchange_fee, balance
+  opportunities = find_opportunities balance.exchange_fee, balance
   t_.hustle += Date.now() - yyy if t_?
 
   if opportunities.length > 0

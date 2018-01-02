@@ -66,13 +66,14 @@ feature_engine = module.exports =
         engine 
 
       # assumes trades is sorted newest first       
-      tick: (trade_idx) -> 
+      tick: -> 
         return engine.enough_trades if engine.now == tick.time 
-
         engine.ticks++ 
 
+        trade_idx = engine.trade_idx = tick.trade_idx or 0
+
         # clear cache every once in awhile
-        if !engine.cache? || engine.ticks % 300 == 299
+        if !engine.cache? || engine.ticks % 10000 == 9999
           engine.cache = engine.next_cache
           engine.next_cache = {}
           engine.price_cache = {}
@@ -99,7 +100,7 @@ feature_engine = module.exports =
         if config.simulation && tick.time < trades[trade_idx].date 
           console.assert false, 
             message: 'Future trades pumped into feature engine'
-            trade: trade 
+            trade: trades[trade_idx] 
             time: tick.time
 
 
@@ -145,13 +146,6 @@ feature_engine = module.exports =
           a = b + 1
         #t_.b += Date.now() - t1t if t_?
 
-
-        # t2t = Date.now() if config.log
-        # for boundary,idx in frame_boundaries
-        #   frames[idx] = trades.slice(boundary[0], boundary[1])
-        # t_.z += Date.now() - t2t if t_?
-
-
           
         # it is really bad for feature computation if the last frame is empty, 
         # especially in weighted features. 
@@ -173,10 +167,11 @@ feature_engine = module.exports =
         engine.last = engine.now
         engine.now = tick_time
         engine.trades = trades
-        engine.trade_idx = trade_idx 
         engine.frame_boundaries = frame_boundaries
         engine.frames = {}
         engine.enough_trades = enough_trades
+
+        console.assert engine.enough_trades
         # tot = 0
         # for k,v of by_feature
         #   tot += v 
@@ -194,7 +189,20 @@ feature_engine = module.exports =
           # t_.z += Date.now() - t2t if t_?
         engine.frames[i]
 
-      last_trade: (i) -> engine.trades[engine.trade_idx]
+      frame_boundary: (i) -> 
+        engine.frame_boundaries[i]
+
+      trades_in_frame: (i) -> 
+        boundary = engine.frame_boundaries[i]
+        boundary[1] - boundary[0]
+
+      earliest_trade: (i) -> 
+        boundary = engine.frame_boundaries[i]
+        engine.trades[boundary[1]]
+
+      latest_trade: (i) -> 
+        engine.trades[engine.trade_idx]
+
     
     feature_engine.resolutions[resolution] = engine
     engine.reset() 
@@ -206,12 +214,20 @@ global.by_feature = {}
 initialize_feature = (engine, name, func) -> 
   all_engines = feature_engine.resolutions
 
-  (args) -> 
+  
+
+  computer = (args) -> 
     # xxx = Date.now()
+
     e = engine
+    if e.now != tick.time 
+      yyy = Date.now()      
+      engine.tick()
+      t_.feature_tick += Date.now() - yyy if t_?
+
     cache = e.cache[name]
     next_cache = e.next_cache[name]
-    now = e.now
+    right_now = e.now
     resolution = e.resolution
 
     t = args?.t or 0
@@ -220,11 +236,10 @@ initialize_feature = (engine, name, func) ->
     vel_weight = args?.vel_weight or ''
 
     ```
-    key = `${now - t * resolution}-${now - t2 * resolution}-${weight}-${vel_weight}`
+    key = `${right_now - t * resolution}-${right_now - t2 * resolution}-${weight}-${vel_weight}`
     ```
 
     val = cache[key]
-
 
     if !val?
       
@@ -251,6 +266,40 @@ initialize_feature = (engine, name, func) ->
 
     # t_.x += Date.now() - xxx if t_?
     val
+
+  computer.past_result = (args, right_now) -> 
+    e = engine
+    cache = e.cache[name]
+    next_cache = e.next_cache[name]
+    resolution = e.resolution
+
+    t = args?.t or 0
+    t2 = args?.t2 or t
+    weight = args?.weight or 1
+    vel_weight = args?.vel_weight or ''
+
+    ```
+    key = `${right_now - t * resolution}-${right_now - t2 * resolution}-${weight}-${vel_weight}`
+    ```
+
+    val = cache[key]
+    if !val?
+      # console.log
+      #   message: 'requesting value not in cache, returning null'
+      #   key: key 
+      #   args: args
+      #   name: name
+      #   right_now: right_now
+      return null
+
+    if !(key of next_cache)
+      next_cache[key] = val
+    val
+
+
+
+
+  computer
 
 
 

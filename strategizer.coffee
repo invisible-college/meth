@@ -10,7 +10,7 @@ series = module.exports =
   volume: (v) -> 
     dependencies: [[v.resolution, 'volume', {weight: v.weight or 1}]]
 
-    evaluate_new_position: (args) -> 
+    eval_whether_to_enter_new_position: (args) -> 
 
       f = @features[v.resolution]
       
@@ -27,7 +27,7 @@ series = module.exports =
   logvolume: (v) -> 
     dependencies: [[v.resolution, 'volume', {weight: v.weight or 1}]]
 
-    evaluate_new_position: (args) -> 
+    eval_whether_to_enter_new_position: (args) -> 
 
       f = @features[v.resolution]
       
@@ -41,10 +41,30 @@ series = module.exports =
 
         pos
 
+  hourly_USD_volume: (v) -> 
+    dependencies: [[v.resolution, 'volume', {weight: v.weight or 1}]]
+
+    eval_whether_to_enter_new_position: (args) -> 
+
+      f = @features[v.resolution]
+
+      if !v.dummy
+        period = 86400
+        idx = Math.floor((tick.time - tick.start) / period)
+        $c2 = (bus.cache['price_data'].c2 or bus.cache['price_data'].c1xc2)[idx]?.close or 0
+
+        pos = 
+          buy: 
+            rate: $c2 * f.volume({weight: v.weight or 1}) / (v.resolution) * 60 * 60
+            entry: true 
+          series_data: "volume"
+
+        pos
+
   EMA_price: (v) -> 
     dependencies: [[v.resolution, 'price', {weight: v.weight or 1}]]
 
-    evaluate_new_position: (args) -> 
+    eval_whether_to_enter_new_position: (args) -> 
       f = @features[v.resolution]
       if Math.random() < .5
 
@@ -58,7 +78,7 @@ series = module.exports =
   price: (v) -> 
     dependencies: [[v.resolution, 'price', {weight: v.weight or 1}]]
 
-    evaluate_new_position: (args) -> 
+    eval_whether_to_enter_new_position: (args) -> 
       f = @features[v.resolution]
       
       if Math.random() < 1
@@ -73,7 +93,7 @@ series = module.exports =
   max_price: (v) -> 
     dependencies: [[v.resolution, 'max_price', {}]]
 
-    evaluate_new_position: (args) -> 
+    eval_whether_to_enter_new_position: (args) -> 
       f = @features[v.resolution]
       if Math.random() < 1
 
@@ -87,7 +107,7 @@ series = module.exports =
   min_price: (v) -> 
     dependencies: [[v.resolution, 'max_price', {}]]
 
-    evaluate_new_position: (args) -> 
+    eval_whether_to_enter_new_position: (args) -> 
       f = @features[v.resolution]
       if Math.random() < 1
 
@@ -101,7 +121,7 @@ series = module.exports =
   last_price: (v) -> 
     dependencies: [[v.resolution, 'last_price', {}]]
 
-    evaluate_new_position: (args) -> 
+    eval_whether_to_enter_new_position: (args) -> 
       f = @features[v.resolution]
       if Math.random() < .5
         
@@ -119,7 +139,7 @@ series = module.exports =
   velocity: (v) -> 
     dependencies: [[v.resolution, 'velocity', {weight: v.weight or 1}]]
 
-    evaluate_new_position: (args) -> 
+    eval_whether_to_enter_new_position: (args) -> 
       f = @features[v.resolution]
       pos = 
         buy: 
@@ -131,7 +151,7 @@ series = module.exports =
   acceleration: (v) -> 
     dependencies: [[v.resolution, 'acceleration', {weight: v.accel_weight or 1}]]
 
-    evaluate_new_position: (args) -> 
+    eval_whether_to_enter_new_position: (args) -> 
 
       f = @features[v.resolution]
       
@@ -146,7 +166,7 @@ series = module.exports =
   volatility: (v) -> 
     dependencies: [[v.resolution, 'volume_adjusted_price_stddev', {}]]
 
-    evaluate_new_position: (args) -> 
+    eval_whether_to_enter_new_position: (args) -> 
       f = @features[v.resolution] 
       pos = 
         buy: 
@@ -158,7 +178,7 @@ series = module.exports =
   volume_by_volatility: (v) -> 
     dependencies: [[v.resolution, 'stddev_by_volume', {}]]
 
-    evaluate_new_position: (args) -> 
+    eval_whether_to_enter_new_position: (args) -> 
       f = @features[v.resolution] 
       pos = 
         buy: 
@@ -170,7 +190,7 @@ series = module.exports =
   downward_volatility: (v) -> 
     dependencies: [[v.resolution, 'downwards_volume_adjusted_price_stddev', {}]]
 
-    evaluate_new_position: (args) -> 
+    eval_whether_to_enter_new_position: (args) -> 
       f = @features[v.resolution] 
       pos = 
         buy: 
@@ -182,7 +202,7 @@ series = module.exports =
   upward_volatility: (v) -> 
     dependencies: [[v.resolution, 'upwards_volume_adjusted_price_stddev', {}]]
 
-    evaluate_new_position: (args) -> 
+    eval_whether_to_enter_new_position: (args) -> 
       f = @features[v.resolution] 
       pos = 
         buy: 
@@ -194,7 +214,7 @@ series = module.exports =
   up_vs_down: (v) -> 
     dependencies: [[v.resolution, 'upwards_vs_downwards_stddev', {weight: v.weight or 1}]]
 
-    evaluate_new_position: (args) -> 
+    eval_whether_to_enter_new_position: (args) -> 
       f = @features[v.resolution] 
       pos = 
         buy: 
@@ -208,7 +228,7 @@ series = module.exports =
   MACD: (v) -> 
     dependencies: [[v.resolution, 'MACD',  {weight: v.weight}]]
 
-    evaluate_new_position: (args) ->
+    eval_whether_to_enter_new_position: (args) ->
       f = @features[v.resolution]
       MACD = f.MACD {weight: v.weight}
 
@@ -222,7 +242,7 @@ series = module.exports =
   MACD_signal: (v) -> 
     dependencies: [[v.resolution, 'MACD_signal',  {weight: v.weight}]]
 
-    evaluate_new_position: (args) ->
+    eval_whether_to_enter_new_position: (args) ->
       f = @features[v.resolution]
       MACD = f.MACD_signal {weight: v.weight}
 
@@ -236,7 +256,7 @@ series = module.exports =
   MACD_short: (v) -> 
     dependencies: [[v.resolution, 'price',  {weight: v.weight}]]
 
-    evaluate_new_position: (args) ->
+    eval_whether_to_enter_new_position: (args) ->
       f = @features[v.resolution]
       p = f.price {weight: v.weight}
 
@@ -250,7 +270,7 @@ series = module.exports =
   MACD_long: (v) -> 
     dependencies: [[v.resolution, 'price',  {weight: v.weight * 12/26}]]
 
-    evaluate_new_position: (args) ->
+    eval_whether_to_enter_new_position: (args) ->
       f = @features[v.resolution]
       p = f.price {weight: v.weight * 12/26}
 
@@ -267,7 +287,7 @@ series = module.exports =
   RSI: (v) -> 
     dependencies: [[v.resolution, 'RSI', {weight: 1 / v.periods}]]
 
-    evaluate_new_position: (args) -> 
+    eval_whether_to_enter_new_position: (args) -> 
       f = @features[v.resolution]
       RSI = f.RSI {weight: 1 / v.periods, t: 0}
 
@@ -282,7 +302,7 @@ series = module.exports =
   RSI_thresh: (v) -> 
     dependencies: [[v.resolution, 'RSI', {weight: 1 / v.periods}]]
 
-    evaluate_new_position: (args) -> 
+    eval_whether_to_enter_new_position: (args) -> 
       f = @features[v.resolution]
 
       RSI = f.RSI {weight: 1 / v.periods, t: 0}
@@ -311,7 +331,7 @@ series = module.exports =
       [v.resolution, 'DM_minus', {weight: v.weight}]      
     ]
 
-    evaluate_new_position: (args) -> 
+    eval_whether_to_enter_new_position: (args) -> 
       f = @features[v.resolution]
 
       ADX = f.ADX {weight: v.weight, t: 0}
@@ -345,7 +365,7 @@ series = module.exports =
       [v.resolution, 'DI_minus', {weight: v.weight}]      
     ]
 
-    evaluate_new_position: (args) -> 
+    eval_whether_to_enter_new_position: (args) -> 
       f = @features[v.resolution]
 
       m = f.DI_plus({weight: v.weight, t: 0}) - f.DI_minus({weight: v.weight, t: 0})
@@ -362,7 +382,7 @@ series = module.exports =
       [v.resolution, 'DI_plus', {weight: v.weight}]
     ]
 
-    evaluate_new_position: (args) -> 
+    eval_whether_to_enter_new_position: (args) -> 
       f = @features[v.resolution]
       if Math.random() < 1  
 
@@ -380,7 +400,7 @@ series = module.exports =
       [v.resolution, 'DI_minus', {weight: v.weight}]      
     ]
 
-    evaluate_new_position: (args) -> 
+    eval_whether_to_enter_new_position: (args) -> 
       f = @features[v.resolution]
       if Math.random() < 1
 
@@ -398,7 +418,7 @@ series = module.exports =
       [v.resolution, 'DM_plus', {weight: v.weight}]
     ]
 
-    evaluate_new_position: (args) -> 
+    eval_whether_to_enter_new_position: (args) -> 
       f = @features[v.resolution]
 
       m = f.DM_plus {weight: v.weight, t: 0}
@@ -415,7 +435,7 @@ series = module.exports =
       [v.resolution, 'DM_minus', {weight: v.weight}]      
     ]
 
-    evaluate_new_position: (args) -> 
+    eval_whether_to_enter_new_position: (args) -> 
       f = @features[v.resolution]
 
       m = f.DM_minus {weight: v.weight, t: 0}
@@ -435,7 +455,7 @@ series = module.exports =
       [v.resolution, 'DM_minus', {weight: v.weight}]      
     ]
 
-    evaluate_new_position: (args) -> 
+    eval_whether_to_enter_new_position: (args) -> 
       f = @features[v.resolution]
 
       p = f.DM_plus {weight: v.weight, t: 0}
@@ -455,7 +475,7 @@ series = module.exports =
       [v.resolution, 'DI_minus', {weight: v.weight}]      
     ]
 
-    evaluate_new_position: (args) -> 
+    eval_whether_to_enter_new_position: (args) -> 
       f = @features[v.resolution]
 
       p = f.DI_plus {weight: v.weight, t: 0}
@@ -473,7 +493,7 @@ series = module.exports =
       [v.resolution, 'ATR', {weight: v.weight}]
     ]
 
-    evaluate_new_position: (args) -> 
+    eval_whether_to_enter_new_position: (args) -> 
       f = @features[v.resolution]
       if Math.random() < 1
 

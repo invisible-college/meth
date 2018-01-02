@@ -48,10 +48,42 @@ module.exports = poloniex =
       "ZEC-ETH": 1477612800
       "BCH-ETH": 1502668800
 
-    console.assert earliest_trades[pair],
-      msg: "earliest trade for #{pair} on not listed in POLONIEX's get_earliest_trade method" 
+    # time after which a pair has sustained 1-week exponentially 
+    # weighted moving average of hourly USD transacted > $50k
+    high_volume = 
+      "BTC-USDT": 1482796800 # after 12/27/16 *
+      "ETH-USDT": 1488499200 # after 3/3/17 * 
+      "LTC-USDT": 1491091200 # after 4/2/17 * 
+      "DASH-USDT": 1489276800 # after 3/12/17 this one is iffy
+      "XMR-USDT": 1489190400 # after 3/11/17 * 
+      "XRP-USDT": 1491004800 # after 4/1/17 *
+      "BCH-USDT": 1502668800 # all * 
+      "ETC-USDT": 1492905600 # after 4/23/17 *
+      "ZEC-USDT": 1495497600 # after 5/23/17 *
 
-    return earliest_trades[pair]
+      "ETH-BTC": 1438992000 # all *
+      "LTC-BTC": 1489795200 # after 3/18/17 * 
+      "DASH-BTC": 1487462400 # after 2/19/17 * 
+      "XRP-BTC": 1489017600 # after 3/9/17 *
+      "XMR-BTC": 1471737600 # after 8/21/16 * 
+      "BCH-BTC": 1502668800 # all * 
+      "ZEC-BTC": 1489536000 # after 3/15/17 * 
+
+      "BCH-ETH": 1509580800 # after 11/2/17 *
+
+    if opts.only_high_volume
+      console.assert high_volume[pair],
+        msg: "high_volume for #{pair} on not listed in POLONIEX's get_earliest_trade method" 
+        high_volume: high_volume
+        pair: pair 
+        val: high_volume[pair]
+
+      return high_volume[pair]
+    else
+      console.assert earliest_trades[pair],
+        msg: "earliest trade for #{pair} on not listed in POLONIEX's get_earliest_trade method" 
+
+      return earliest_trades[pair]
 
 
   get_chart_data: (opts, callback) -> 
@@ -237,6 +269,9 @@ module.exports = poloniex =
         maker_fee: parseFloat body.makerFee
 
   place_order: (opts, callback) -> 
+    if opts.market 
+      return poloniex.market_order(opts, callback)
+
     poloniex.query_trading_api
       command: opts.type
       amount: opts.amount
@@ -252,6 +287,45 @@ module.exports = poloniex =
       else 
         body.order_id = body.orderNumber
         callback body
+
+  market_order: (opts, callback) -> 
+    amount = opts.amount 
+    rate = opts.rate
+    total = amount * rate
+    is_buy = opts.type == 'buy'
+
+    cb = (err, resp, body) ->
+      if !body
+        callback
+          error: err 
+          response: resp 
+          message: body.error 
+      else
+        # todo: check for whether fill or kill was successful
+        if fill or kill canceled
+          if is_buy 
+            rate *= 1.005
+            amount = total / rate
+          else 
+            rate *= 0.995
+
+          try_order()
+
+        else 
+          body.order_id = body.orderNumber
+          callback body
+
+    try_order = ->
+      poloniex.query_trading_api
+        command: opts.type
+        amount: amount
+        rate: rate
+        currencyPair: "#{opts.c1}_#{opts.c2}"
+        fillOrKill: 1
+      , cb
+
+    try_order()
+   
 
   cancel_order: (opts, callback) -> 
 
@@ -269,6 +343,8 @@ module.exports = poloniex =
 
 
   move_order: (opts, callback) -> 
+    console.assert !opts.market 
+
     poloniex.query_trading_api
       command: 'moveOrder'
       orderNumber: opts.order_id

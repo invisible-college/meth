@@ -5,7 +5,7 @@
 # beyond the code itself.
 
 require '../shared'
-strategizer = require '../strategizer'
+series = require '../strategizer'
 
 
 module.exports = strats = {}
@@ -18,7 +18,7 @@ strats.meanbot = (v) ->
   frames: required_frames(v.long_weight) 
 
   # return a new position if this strategy determines it is a good time to do so
-  evaluate_new_position: (args) ->
+  eval_whether_to_enter_new_position: (args) ->
     f = args.features
     long = f.price weight: Math.to_precision(v.long_weight, 1)
     short = f.price weight: Math.to_precision(v.short_weight, 1)
@@ -91,7 +91,7 @@ strats.pure_rebalance = (v) ->
 
 
   # return a new position if this strategy determines it is a good time to do so
-  evaluate_new_position: (args) ->
+  eval_whether_to_enter_new_position: (args) ->
     f = args.features
 
     dealer = args.dealer 
@@ -166,7 +166,7 @@ strats.RSI = (v) ->
   frames: Math.max(v.periods, required_frames(alpha)) + 2
   max_t2: 1
 
-  evaluate_new_position: (args) ->
+  eval_whether_to_enter_new_position: (args) ->
     f = args.features
     open = args.open_positions
 
@@ -221,7 +221,7 @@ strats.RSI = (v) ->
 
       exit = false 
 
-      action = strats.RSI(v).evaluate_new_position(args)
+      action = strats.RSI(v).eval_whether_to_enter_new_position(args)
       if action 
 
         entry = action.buy or action.sell 
@@ -255,7 +255,7 @@ strats.RSIxADX = (v) ->
   frames: required_frames(Math.min(ADX_alpha, RSI_alpha)) + 2
   max_t2: 1
 
-  evaluate_new_position: (args) ->
+  eval_whether_to_enter_new_position: (args) ->
     f = args.features
     open = args.open_positions
 
@@ -332,7 +332,7 @@ strats.RSIxADX_up = (v) ->
   frames: required_frames(Math.min(ADX_alpha, RSI_alpha)) + 2
   max_t2: 1
 
-  evaluate_new_position: (args) ->
+  eval_whether_to_enter_new_position: (args) ->
     f = args.features
     open = args.open_positions
 
@@ -392,7 +392,7 @@ strats.RSIxADX_down = (v) ->
   frames: required_frames(Math.min(ADX_alpha, RSI_alpha)) + 2
   max_t2: 1
 
-  evaluate_new_position:  (args) ->
+  eval_whether_to_enter_new_position:  (args) ->
     f = args.features
     open = args.open_positions
     action = null 
@@ -446,7 +446,7 @@ strats.RSIxDI = (v) ->
   frames: v.slow_periods + 2 #required_frames(slow_alpha) + 2
   max_t2: 1
 
-  evaluate_new_position: (args) ->
+  eval_whether_to_enter_new_position: (args) ->
     f = args.features
     open = args.open_positions
 
@@ -493,7 +493,7 @@ strats.ADX_cross = (v) ->
   frames: required_frames(ADX_alpha) + 2
   max_t2: 1
 
-  evaluate_new_position: (args) ->
+  eval_whether_to_enter_new_position: (args) ->
     f = args.features
     open = args.open_positions
 
@@ -536,7 +536,7 @@ strats.DM_crossover = (v) ->
   frames: required_frames(alpha) + 2
   max_t2: 1
 
-  evaluate_new_position: (args) ->
+  eval_whether_to_enter_new_position: (args) ->
     f = args.features
 
     cur = f.DM_plus({weight: alpha, t: 0}) - f.DM_minus({weight: alpha, t: 0})
@@ -585,7 +585,7 @@ strats.crossover = (v) ->
   frames: required_frames(Math.min(v.long_weight, v.short_weight)) + 2
   max_t2: (v.num_consecutive or 0) + 1
 
-  evaluate_new_position: (args) ->
+  eval_whether_to_enter_new_position: (args) ->
     f = args.features
     open = args.open_positions
 
@@ -653,7 +653,7 @@ strats.gunslinger = (v) ->
   position_amount: get_amount
 
   # return a new position if this strategy determines it is a good time to do so
-  evaluate_new_position: (args) ->
+  eval_whether_to_enter_new_position: (args) ->
     f = args.features
 
     long = f.price weight: v.long_weight

@@ -31,7 +31,7 @@ module.exports = history =
             console.log k1, new Date(price_data[k1][0].date * 1000).toISOString(), new Date(price_data[k1][price_data[k1].length - 1].date * 1000).toISOString()
             console.log k, new Date(price_data[k][0].date * 1000).toISOString(), new Date(price_data[k][price_data[k].length - 1].date * 1000).toISOString()
             console.log {message: "Price data of different length!", c1: config.c1, c2: config.c2, accounting: config.accounting_currency, key1: k1, key2: k, len1: length, len2: v.length}
-            console.log price_data
+            # console.log price_data
             setTimeout load_history, 1000
             return
 
@@ -161,12 +161,6 @@ module.exports = history =
         bar.tick() if config.log
         if to_run.length == 0
 
-          # history_hash = {}
-          # for trade in history.trades 
-          #   key = trade.date
-          #   history_hash[key] ||= []
-          #   history_hash[key].push trade 
-
           history.trades.sort (a,b) -> b.date - a.date
 
           console.log "Done loading history! #{history.trades.length} trades." if config.log
@@ -247,7 +241,7 @@ load_hour = (hour, end) ->
           for trade in trades 
             process_new_trade trade 
 
-          if hour + 1 <= now() / 60 / 60 && trades.length > 0 && !fs.existsSync(fname)
+          if hour + 1 <= now() / 60 / 60 && !fs.existsSync(fname) # && trades.length > 0
             fs.writeFileSync fname, JSON.stringify(trades), 'utf8'
 
           #console.log "...loaded hour #{hour} with #{trades.length} trades from #{config.exchange}. Saved to #{fname}"
