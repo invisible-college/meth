@@ -194,17 +194,22 @@ module.exports = poloniex =
           poloniex.get_my_fills opts, callback 
         , 200
       else  
+        balance = from_cache('balance')
+
         my_fills = []
         for fill in fills 
+          fee = parseFloat(fill.fee)
+          amount = parseFloat fill.amount
+          total = parseFloat fill.total
           my_fills.push 
             order_id: fill.orderNumber 
             fill_id: fill.tradeID 
-            amount: parseFloat fill.amount
-            total: parseFloat fill.total
+            amount: amount
+            total: total
             rate: parseFloat fill.rate
-            fee: parseFloat(fill.fee) * (if fill.type == 'buy' then fill.amount else fill.total)
+            fee: fee * (if fill.type == 'buy' then amount else total)
             date: Date.parse(fill.date + " +0000") / 1000
-
+            maker: Math.abs(fee - balance.maker_fee) < Math.abs(fee - balance.taker_fee)
         callback(my_fills)
 
 
@@ -256,17 +261,23 @@ module.exports = poloniex =
 
 
   get_my_exchange_fee: (opts, callback) -> 
-    poloniex.query_trading_api
-      command: 'returnFeeInfo'
-    , (err, resp, body) -> 
 
-      console.assert body && !body.error, 
-        message: 'Exchange fee returned error'
-        error: body.error
+    if config.simulation
+      callback 
+        taker_fee: .0025
+        maker_fee: .0015
+    else       
+      poloniex.query_trading_api
+        command: 'returnFeeInfo'
+      , (err, resp, body) -> 
 
-      callback
-        taker_fee: parseFloat body.takerFee
-        maker_fee: parseFloat body.makerFee
+        console.assert body && !body.error, 
+          message: 'Exchange fee returned error'
+          error: body.error
+
+        callback
+          taker_fee: parseFloat body.takerFee
+          maker_fee: parseFloat body.makerFee
 
   place_order: (opts, callback) -> 
     if opts.market 
@@ -289,6 +300,8 @@ module.exports = poloniex =
         callback body
 
   market_order: (opts, callback) -> 
+    console.assert false, 
+      message: 'market orders not yet supported on poloniex'
     amount = opts.amount 
     rate = opts.rate
     total = amount * rate
@@ -302,7 +315,7 @@ module.exports = poloniex =
           message: body.error 
       else
         # todo: check for whether fill or kill was successful
-        if fill or kill canceled
+        if false # fill or kill did not work
           if is_buy 
             rate *= 1.005
             amount = total / rate

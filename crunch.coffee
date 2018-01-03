@@ -111,11 +111,11 @@ compute_KPI = (dealer_or_dealers, name) ->
       reset: reset
       gains: gains
 
-  trades = (pos.entry.fills for pos in positions when pos.entry?.fills?.length > 0)
-  trades = trades.concat (pos.exit.fills for pos in positions when pos.exit?.fills?.length > 0)
-  trades = [].concat trades... # flatten
+  fills = (pos.entry.fills for pos in positions when pos.entry?.fills?.length > 0)
+  fills = fills.concat (pos.exit.fills for pos in positions when pos.exit?.fills?.length > 0)
+  fills = [].concat fills... # flatten
   
-  trades.sort (a,b) -> b.date - a.date 
+  fills.sort (a,b) -> b.date - a.date 
 
   positions_by_closed = (p for p in positions when p.closed)
   positions_by_closed.sort (a,b) -> b.closed - a.closed
@@ -123,7 +123,9 @@ compute_KPI = (dealer_or_dealers, name) ->
   positions_by_created.sort (a,b) -> b.created - a.created
   active_positions = []
   
-  xfee = balances.exchange_fee
+  taker_fee = balances.taker_fee
+  maker_fee = balances.maker_fee
+
   baseline = deposits[name]
   cur_balance = 
     c2: deposits[name].c2
@@ -160,30 +162,30 @@ compute_KPI = (dealer_or_dealers, name) ->
     # trade-level metrics
     while true 
 
-      break if trades.length == 0 || trades[trades.length - 1].date > period / 1000 + period_length
+      break if fills.length == 0 || fills[fills.length - 1].date > period / 1000 + period_length
 
-      trade = trades.pop()
-
+      fill = fills.pop()
+      xfee = if fill.maker then maker_fee else taker_fee
       # console.log 'TRADE AMOUNT', trade.amount, trade.type
-      if trade.type == 'buy'
-        cur_balance.c1 -= trade.total
-        cur_balance.c2 += trade.amount
+      if fill.type == 'buy'
+        cur_balance.c1 -= fill.total
+        cur_balance.c2 += fill.amount
 
         if config.exchange == 'poloniex'
-          cur_balance.c2 -= trade.amount * xfee
+          cur_balance.c2 -= fill.amount * xfee
         else 
-          cur_balance.c1 -= trade.total * xfee
+          cur_balance.c1 -= fill.total * xfee
 
       else 
-        cur_balance.c1 += trade.total
-        cur_balance.c2 -= trade.amount
-        cur_balance.c1 -= trade.total * xfee 
+        cur_balance.c1 += fill.total
+        cur_balance.c2 -= fill.amount
+        cur_balance.c1 -= fill.total * xfee 
 
 
-      if cur_balance.c2 < 0 || cur_balance.c1 < 0 
-        console.error 'negative balance!', cur_balance, name
-        console.log trade
-        process.exit()
+    if cur_balance.c2 < 0 || cur_balance.c1 < 0 
+      console.error 'negative balance!', cur_balance, name
+      console.log config.c1, config.c2 #, fill, 
+      process.exit()
     
 
     # position-level metrics

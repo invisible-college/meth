@@ -30,7 +30,7 @@ one_tick = ->
   tick.time = now()
 
   time = fetch 'time'
-
+  
   console.log "TICKING! #{all_lag.length} queries with #{Math.average(all_lag)} avg lag"
 
   history.load_price_data (time.earliest or tick.started) - tick.history_to_keep, now(), ->
@@ -496,8 +496,6 @@ update_fee_schedule = (callback) ->
     balance = from_cache 'balances'
     balance.maker_fee = result.maker_fee
     balance.taker_fee = result.taker_fee 
-
-    balance.exchange_fee = .75 * balance.maker_fee + .25 * balance.taker_fee
 
     bus.save balance
     callback()

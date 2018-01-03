@@ -163,7 +163,7 @@ reset_open = ->
 
 
 
-find_opportunities = (exchange_fee, balance) -> 
+find_opportunities = (balance) -> 
 
   console.assert tick?.time?,
     message: "tick.time is not defined!"
@@ -205,11 +205,11 @@ find_opportunities = (exchange_fee, balance) ->
 
       #yyy = Date.now()
       if spec 
-        position = create_position spec, name, exchange_fee
+        position = create_position spec, name
         #t_.create_pos += Date.now() - yyy if t_?
 
         yyy = Date.now()      
-        valid = position && is_valid_position(position, balance[position.dealer])
+        valid = position && is_valid_position(position)
         found_match = false 
 
         if valid
@@ -314,7 +314,7 @@ find_opportunities = (exchange_fee, balance) ->
 
 
 
-execute_opportunities = (opportunities, exchange_fee, balance) -> 
+execute_opportunities = (opportunities) -> 
   return if !opportunities || opportunities.length == 0 
 
   for opportunity in opportunities
@@ -331,14 +331,14 @@ execute_opportunities = (opportunities, exchange_fee, balance) ->
         force_cancel pos
 
       when 'exit'
-        exit_position {pos, rate: opportunity.rate, exchange_fee, market_trade: opportunity.market, amount: opportunity.amount or pos.entry.amount}
+        exit_position {pos, rate: opportunity.rate, market_trade: opportunity.market, amount: opportunity.amount or pos.entry.amount}
         take_position pos
 
       when 'update_exit'
-        update_exit pos, opportunity.rate, exchange_fee
+        update_exit pos, opportunity.rate
 
       when 'update_entry'
-        update_entry pos, opportunity.rate, exchange_fee
+        update_entry pos, opportunity.rate
 
 
 
@@ -388,7 +388,7 @@ check_wallet = (opportunities, balance) ->
   doable
 
 
-create_position = (spec, dealer, exchange_fee) -> 
+create_position = (spec, dealer) -> 
   return null if !spec
 
   buy = spec.buy 
@@ -441,11 +441,11 @@ create_position = (spec, dealer, exchange_fee) ->
 
   # predict returns if we place both at once
   if simultaneous
-    set_expected_profit position, exchange_fee
+    set_expected_profit position
 
   position
 
-exit_position = ({pos, rate, exchange_fee, market_trade, amount}) ->
+exit_position = ({pos, rate, market_trade, amount}) ->
   console.assert pos.entry, {message: 'position can\'t be exited because entry is undefined', pos: pos, rate: rate} 
   type = if pos.entry.type == 'buy' then 'sell' else 'buy'
   amount = amount or pos.entry.amount
@@ -467,7 +467,7 @@ exit_position = ({pos, rate, exchange_fee, market_trade, amount}) ->
       trade.amount = parseFloat((Math.floor(trade.amount * 1000000) / 1000000).toFixed(6))
 
 
-  set_expected_profit pos, exchange_fee
+  set_expected_profit pos
   pos
 
 
@@ -513,7 +513,7 @@ took_position = (pos, error) ->
       open_positions[pos.dealer].push pos
 
 
-update_exit = (pos, rate, exchange_fee) ->
+update_exit = (pos, rate) ->
 
   # pay attention to case where both entry and exit are stuck b/c of partial fills
 
@@ -586,7 +586,7 @@ update_exit = (pos, rate, exchange_fee) ->
         pos.exit.amount = new_amount + amt_purchased
         pos.exit.to_fill = new_amount 
 
-      set_expected_profit pos, exchange_fee
+      set_expected_profit pos
 
   if pusher.update_trade
     pusher.update_trade 
@@ -600,7 +600,7 @@ update_exit = (pos, rate, exchange_fee) ->
 
 
 # TODO: merge with update_exit
-update_entry = (pos, rate, exchange_fee) ->
+update_entry = (pos, rate) ->
 
   if config.exchange == 'gdax'
     if config.c1 == 'USD' # can't have fractions of cents (at least on GDAX!)
@@ -658,7 +658,7 @@ update_entry = (pos, rate, exchange_fee) ->
         pos.entry.amount = new_amount + amt_purchased
         pos.entry.to_fill = new_amount 
 
-      set_expected_profit pos, exchange_fee
+      set_expected_profit pos
 
   if pusher.update_trade
     pusher.update_trade 
@@ -742,25 +742,26 @@ destroy_position = (pos) ->
 
 
 
-set_expected_profit = (pos, exchange_fee) -> 
+set_expected_profit = (pos) -> 
   entry = pos.entry
   exit = pos.exit
   if entry && exit && entry.rate > 0 && exit.rate > 0 
     eth = btc = 0 
+    xfee = from_cache('balance').taker_fee
 
     for trade in [entry, exit]
 
       if trade.type == 'buy'
         eth += trade.amount 
         if config.exchange == 'poloniex'
-          eth -= if trade.fee? then trade.fee else trade.amount * exchange_fee
+          eth -= if trade.fee? then trade.fee else trade.amount * xfee
         else 
-          btc -= if trade.fee? then trade.fee else (trade.total or trade.amount * trade.rate) * exchange_fee
+          btc -= if trade.fee? then trade.fee else (trade.total or trade.amount * trade.rate) * xfee
         btc -= (trade.total or trade.amount * trade.rate)
       else
         eth -= trade.amount 
         btc += (trade.total or trade.amount * trade.rate)
-        btc -= if trade.fee? then trade.fee else (trade.total or trade.amount * trade.rate) * exchange_fee
+        btc -= if trade.fee? then trade.fee else (trade.total or trade.amount * trade.rate) * xfee
 
     pos.expected_profit = eth + btc / exit.rate
   pos
@@ -778,7 +779,7 @@ set_expected_profit = (pos, exchange_fee) ->
 #     - profit threshold
 
 LOG_REASONS = false 
-is_valid_position = (pos, balance) ->  
+is_valid_position = (pos) ->  
   return false if !pos
   return true if pos.series_data
 
@@ -851,7 +852,7 @@ action_priorities =
 
 hustle = (balance) -> 
   yyy = Date.now()     
-  opportunities = find_opportunities balance.exchange_fee, balance
+  opportunities = find_opportunities balance
   t_.hustle += Date.now() - yyy if t_?
 
   if opportunities.length > 0
@@ -871,7 +872,7 @@ hustle = (balance) ->
     #   #   if op not in fillable_opportunities
     #   #     console.log 'ELIMINATED:', op.pos.dealer
     if fillable_opportunities.length > 0 
-      execute_opportunities fillable_opportunities, balance.exchange_fee, balance
+      execute_opportunities fillable_opportunities
 
     t_.exec += Date.now() - yyy if t_?
 

@@ -80,7 +80,10 @@ simulate = (ts, callback) ->
       c1: 0
       c2: 0
 
-    exchange_fee: config.exchange_fee
+  exchange.get_my_exchange_fee {}, (fees) -> 
+    balance.maker_fee = fees.maker_fee
+    balance.taker_fee = fees.taker_fee 
+
 
   dealers = get_dealers()
   $c2 = price_data.c2?[0].close or price_data.c1xc2[0].close
@@ -261,7 +264,8 @@ update_balance = (balance, dealers_with_open) ->
 
 
   btc = eth = btc_on_order = eth_on_order = 0
-  x_fee = balance.exchange_fee
+  maker_fee = balance.maker_fee
+  taker_fee = balance.taker_fee 
 
   for dealer in dealers_with_open
     positions = open_positions[dealer]
@@ -286,6 +290,7 @@ update_balance = (balance, dealers_with_open) ->
 
         if buy.fills?.length > 0           
           for fill in buy.fills
+            x_fee = if fill.maker then maker_fee else taker_fee
             deth += fill.amount 
             dbtc -= fill.total
 
@@ -301,6 +306,7 @@ update_balance = (balance, dealers_with_open) ->
 
         if sell.fills?.length > 0 
           for fill in sell.fills 
+            x_fee = if fill.maker then maker_fee else taker_fee
             deth -= fill.amount
             dbtc += fill.total 
             dbtc -= fill.total * x_fee 
@@ -374,6 +380,8 @@ purge_position_status = ->
 
 
 update_position_status = (end_idx, balance, dealers_with_open) -> 
+  maker_fee = balance.maker_fee
+  taker_fee = balance.taker_fee
 
   for dealer in dealers_with_open
     open = open_positions[dealer]
@@ -450,9 +458,19 @@ update_position_status = (end_idx, balance, dealers_with_open) ->
       for trade in [pos.entry, pos.exit] when trade
         amount = 0
         total = 0 
+        total_fees = 0 
+        amount_fees = 0 
+
         for fill in trade.fills 
           total += fill.total 
           amount += fill.amount 
+
+          xfee = if fill.maker then maker_fee else taker_fee
+
+          if trade.type == 'buy' && config.exchange == 'poloniex'
+            amount_fees += fill.fee or fill.amount * xfee
+          else 
+            total_fees += fill.fee or fill.total * xfee
 
         trade.total = total 
         trade.amount = amount 
@@ -465,13 +483,6 @@ update_position_status = (end_idx, balance, dealers_with_open) ->
           balance[name].accounted_for.c2 += trade.amount 
           balance[name].accounted_for.c1 -= trade.total
 
-          if config.exchange == 'poloniex'
-            balance[name].accounted_for.c2 -= trade.amount * balance.exchange_fee
-            balance.accounted_for.c2       -= trade.amount * balance.exchange_fee
-          else 
-            balance.accounted_for.c1       -= trade.total * balance.exchange_fee
-            balance[name].accounted_for.c1 -= trade.total * balance.exchange_fee
-
 
         else
           balance.accounted_for.c2 -= trade.amount 
@@ -480,12 +491,16 @@ update_position_status = (end_idx, balance, dealers_with_open) ->
           balance[name].accounted_for.c2 -= trade.amount 
           balance[name].accounted_for.c1 += trade.total 
 
-          balance.accounted_for.c1       -= trade.total * balance.exchange_fee
-          balance[name].accounted_for.c1 -= trade.total * balance.exchange_fee
-
 
         # original = trade.rate
         trade.rate = trade.total / trade.amount
+
+        balance.accounted_for.c2 -= amount_fees 
+        balance.accounted_for.c1 -= total_fees
+
+        balance[name].accounted_for.c2 -= amount_fees
+        balance[name].accounted_for.c1 -= total_fees
+
 
 
 
@@ -497,8 +512,6 @@ update_position_status = (end_idx, balance, dealers_with_open) ->
 fill_order = (my_trade, end_idx, status) -> 
 
   status ||= {}
-
-
 
   my_amount = my_trade.amount 
   my_rate = my_trade.rate
@@ -530,19 +543,27 @@ fill_order = (my_trade, end_idx, status) ->
     if (!is_sell && trade.rate <= my_rate) || \
        ( is_sell && trade.rate >= my_rate) || is_market
 
-
       if is_market
         if (is_sell && trade.rate < my_rate) || (!is_sell && trade.rate > my_rate)
           rate = trade.rate 
         else 
           rate = my_rate 
+        maker = false
       else 
         rate = my_rate 
+        if trade.date - my_created > 60
+          maker = true 
+        else if trade.date - my_created + trade_lag < 10 
+          maker = false 
+        else 
+          maker = Math.random() < .5
 
       fill = 
         date: trade.date 
         rate: rate
         amount: trade.amount
+        maker: maker
+
 
       fills.push fill
 
@@ -564,7 +585,7 @@ fill_order = (my_trade, end_idx, status) ->
 
 
 store_analysis = ->
-
+  balance = from_cache 'balance'
   # analysis of positions
   fs = require('fs')
   if !fs.existsSync 'analyze'
@@ -580,7 +601,7 @@ store_analysis = ->
   sample_dealer = null
   for name in dealer_names
     for pos in (from_cache(name).positions or [])
-      sample = dealers[name].analyze pos, config.exchange_fee
+      sample = dealers[name].analyze pos, balance.maker_fee
       sample_dealer = name
       break 
     break if sample 
@@ -599,7 +620,7 @@ store_analysis = ->
     settings = get_settings(name) or {}
 
     for pos in positions
-      row = dealer.analyze(pos, config.exchange_fee)
+      row = dealer.analyze(pos, balance.maker_fee)
       independent = extend {}, row.independent, settings
       rows.push ( (if col of independent then independent[col] else row.dependent[col]) for col in cols)
 
@@ -785,7 +806,6 @@ lab = module.exports =
       c2: 'ETH'
       accounting_currency: 'USDT'
       trade_lag: 20
-      exchange_fee: .0020
       log: true
       enforce_balance: true
       persist: false
@@ -793,11 +813,12 @@ lab = module.exports =
       produce_heapdump: false
       offline: false
       auto_shorten_time: true
+
+
     save config 
 
     # set globals
     global.position_status = {}
-
 
     ts = config.end or now()
 

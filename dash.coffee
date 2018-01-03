@@ -1763,7 +1763,8 @@ dom.BANK = ->
       c1: 0
       c2: 0
 
-
+    maker_fee = balances.maker_fee
+    taker_fee = balances.taker_fee
     for dealer in dealers
       positions = fetch(dealer).positions
       dealer = deslash(dealer)
@@ -1778,10 +1779,11 @@ dom.BANK = ->
 
       all_trades = all_entries.concat all_exits
 
-      xfee = balances.exchange_fee
+      
       for trade in all_trades
         if trade.type == 'buy'
           for fill in trade.fills
+            xfee = if fill.maker then maker_fee else taker_fee
             balance_sum_from_positions.c2 += fill.amount
             balance_sum_from_positions.c1 -= fill.total
 
@@ -1792,6 +1794,7 @@ dom.BANK = ->
 
         else 
           for fill in trade.fills
+            xfee = if fill.maker then maker_fee else taker_fee
             balance_sum_from_positions.c2 -= fill.amount
             balance_sum_from_positions.c1 += fill.total
             balance_sum_from_positions.c1 -= (if fill.fee? then fill.fee else fill.total * xfee)

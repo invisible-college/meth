@@ -406,7 +406,7 @@ module.exports = gdax =
           total: parseFloat(fill.price) * parseFloat(fill.size)
           fee: parseFloat(fill.fee)
           date: new Date(fill.created_at).getTime() / 1000
-
+          maker: fill.liquidity == 'M'
       callback fills
 
     depaginated_request 'getFills', 

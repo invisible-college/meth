@@ -9,10 +9,8 @@ exchange = 'gdax' # GDAX only works currently in backtesting
 
 if exchange == 'gdax'
   accounting_currency = 'USD'
-  xfee = .0005 
 else if exchange == 'poloniex'
   accounting_currency = 'USDT'
-  xfee = .002
 
 resimulate = true 
 
@@ -47,7 +45,6 @@ if resimulate
     accounting_currency: accounting_currency
     simulation_width:  24 * 7 * 24 * 60 * 60 # backtest over 24 week period
     end:  Date.now() / 1000 - 0 * 7 * 24 * 60 * 60 # ending now
-    exchange_fee: xfee # exchange fee (adjust based on your estimate of maker/taker proportions)
     eval_entry_every_n_seconds: 60
     eval_exit_every_n_seconds: 60
     eval_unfilled_every_n_seconds: 60
