@@ -6,14 +6,15 @@ fs = require('fs')
 RATE_LIMIT = 1000
 
 GDAX_client = (opts) ->
-  product_id = "#{opts.c2 or config.c2}-#{opts.c1 or config.c1}"
-  if api_credentials?
-    client = new Gdax.AuthenticatedClient api_credentials.key, api_credentials.secret, api_credentials.pass
-    client.productID = product_id
-  else 
-    client = new Gdax.PublicClient(product_id)
-
-  client
+  if !gdax.client 
+    product_id = "#{opts.c2 or config.c2}-#{opts.c1 or config.c1}"
+    if api_credentials?
+      client = new Gdax.AuthenticatedClient api_credentials.key, api_credentials.secret, api_credentials.pass
+      client.productID = product_id
+    else 
+      client = new Gdax.PublicClient(product_id)
+    gdax.client = client 
+  gdax.client
   
     
 write_trades = (hour, trades, c1, c2) -> 
@@ -31,7 +32,7 @@ get_trades = (client, c1, c2, hours, after, stop_when_cached, callback, stop_aft
     if error || !data || data.message || !response
       console.error {message: 'error downloading trades! trying again', error: error, data: data}
       setTimeout ->
-        client.getProductTrades {after: after, limit: limit}, cb 
+        client.getProductTrades client.productID, {after: after, limit: limit}, cb 
       , 1000
       return
 
@@ -79,7 +80,7 @@ get_trades = (client, c1, c2, hours, after, stop_when_cached, callback, stop_aft
     else 
       callback?(hours)
 
-  client.getProductTrades {after: after, limit: limit}, cb 
+  client.getProductTrades client.productID, {after: after, limit: limit}, cb 
 
 
 
@@ -106,7 +107,7 @@ load_trades = (opts) ->
     if error || !data || data.message
       console.error {message: 'error downloading trades! trying again', error: error, data: data}
       setTimeout ->
-        client.getProductTrades {limit: 1}, cb 
+        client.getProductTrades client.productID, {limit: 1}, cb 
       , 1000
       return
 
@@ -116,7 +117,7 @@ load_trades = (opts) ->
     latest_page = opts.starting_page or response.headers['cb-before'] 
     get_trades client, opts.c1, opts.c2, {}, latest_page, opts.stop_when_cached, opts.cb, opts.stop_after_hour
   
-  client.getProductTrades {limit: 1}, cb
+  client.getProductTrades client.productID, {limit: 1}, cb
 
 
 
@@ -131,7 +132,7 @@ _find_page_for_hour = (client, hour, current_page, previous_page, callback) ->
     if error || !data || data.message
       console.error {message: 'error downloading trades! trying again', error: error, data: data}
       setTimeout -> 
-        client.getProductTrades {after: current_page, limit: limit}, cb
+        client.getProductTrades client.productID, {after: current_page, limit: limit}, cb
       , 1000
       return
 
@@ -158,7 +159,7 @@ _find_page_for_hour = (client, hour, current_page, previous_page, callback) ->
       _find_page_for_hour client, hour, Math.round(next_page), current_page, callback
 
 
-  client.getProductTrades {after: current_page, limit: limit}, cb 
+  client.getProductTrades client.productID, {after: current_page, limit: limit}, cb 
 
 
 
@@ -173,14 +174,14 @@ find_page_for_hour = (opts, callback) ->
     if error || !data || data.message
       console.error {message: 'error downloading trades! trying again', error: error, data: data}
       setTimeout ->
-        client.getProductTrades {limit: 1}, cb 
+        client.getProductTrades client.productID, {limit: 1}, cb 
       , 1000
       return
 
     current_hour = Math.floor(new Date(data[0].time).getTime() / 1000 / 60 / 60)
     _find_page_for_hour client, opts.hour, response.headers['cb-before'], 0, callback 
 
-  client.getProductTrades {limit: 1}, cb
+  client.getProductTrades client.productID, {limit: 1}, cb
 
 
 
@@ -206,7 +207,7 @@ getProductHistoricRates = ({start, end, granularity}, cb) ->
 
 load_chart_data = (client, opts, callback) -> 
 
-  granularity = opts.period - 1
+  granularity = opts.period
   chunk_size = granularity * 10000  # load at most 20 candles per
 
   all_data = []
@@ -225,7 +226,7 @@ load_chart_data = (client, opts, callback) ->
       if error || !data || data.message
         console.error {message: 'error getting chart data, trying again', error: error, message: data?.message}
         setTimeout -> 
-          client.getProductHistoricRates {start, end, granularity}, cb
+          client.getProductHistoricRates client.productID, {start, end, granularity}, cb
 
         , 1000
         return 
@@ -242,7 +243,7 @@ load_chart_data = (client, opts, callback) ->
       else  
         callback [].concat all_data...
 
-    client.getProductHistoricRates {start, end, granularity}, cb
+    client.getProductHistoricRates client.productID, {start, end, granularity}, cb
 
   next()
 
@@ -318,56 +319,57 @@ module.exports = gdax =
 
   subscribe_to_trade_history: (opts, callback) -> 
 
-    WS = require('ws')
-    wsuri = "wss://ws-feed.gdax.com"
 
-    connection = new WS(wsuri, [], {})
+    create_connection = -> 
+      WS = require('ws')
+      wsuri = "wss://ws-feed.gdax.com"
+      conn = new WS(wsuri, [], {})
+
+      conn.onopen = (e) ->
+
+        conn.keepAliveId = setInterval -> 
+          conn.ping('keepalive')
+        , 30000
+
+        console.log '...engine is now receiving live updates'
+        lag_logger?(99999)
+
+        conn.send JSON.stringify {type: 'subscribe', product_ids: ["#{config.c2}-#{config.c1}"]}
+
+        callback()
+
+      conn.onmessage = (msg) ->
+        if !msg || !msg.data 
+          console.error '...empty data returned by gdax live update', msg 
+          return
+
+        data = JSON.parse(msg.data)
+
+        return if data.type != 'match'
+
+        trade = 
+          rate: parseFloat(data.price)
+          amount: parseFloat(data.size)
+          total: parseFloat(data.price) * parseFloat(data.size)
+          date: new Date(data.time).getTime() / 1000
+
+        opts.new_trade_callback trade 
 
 
-    connection.onopen = (e) ->
+          
+      conn.onclose = (msg) -> 
+        console.log '...lost connection to live feed from exchange',
+          event: msg 
+           
+        setTimeout ->
+          console.log '...trying to reconnect'
+          create_connection()
+        , 500
 
-      connection.keepAliveId = setInterval -> 
-        connection.ping('keepalive')
-      , 30000
+      conn.onerror = (err) ->
+        console.error('error from gdax:', err) 
 
-      console.log '...engine is now receiving live updates'
-      lag_logger?(99999)
-
-      connection.send JSON.stringify {type: 'subscribe', product_ids: ["#{config.c2}-#{config.c1}"]}
-
-      callback()
-
-    connection.onmessage = (msg) ->
-      if !msg || !msg.data 
-        console.error '...empty data returned by gdax live update', msg 
-        return
-
-      data = JSON.parse(msg.data)
-
-      return if data.type != 'match'
-
-      trade = 
-        rate: parseFloat(data.price)
-        amount: parseFloat(data.size)
-        total: parseFloat(data.price) * parseFloat(data.size)
-        date: new Date(data.time).getTime() / 1000
-
-      opts.new_trade_callback trade 
-
-
-        
-    connection.onclose = (msg) -> 
-      console.log '...lost connection to live feed from exchange',
-        event: msg 
-         
-      setTimeout ->
-        console.log '...trying to reconnect'
-        connection = new WS(wsuri, [], {})
-      , 500
-
-    connection.onerror = (err) ->
-      console.error('error from gdax:', err)    
-
+    create_connection()
 
 
   get_trade_history: (opts, callback) -> 
@@ -409,10 +411,15 @@ module.exports = gdax =
           maker: fill.liquidity == 'M'
       callback fills
 
-    depaginated_request 'getFills', 
-      product_id: "#{opts.c2}-#{opts.c1}"
+    # depaginated_request 'getFills', 
+    #   product_id: "#{opts.c2}-#{opts.c1}"
+    #   start: opts.start
+    # , cb 
+
+    depaginated_request 'getFills', {
+      product_id: GDAX_client(opts).productID
       start: opts.start
-    , cb 
+    }, cb
 
 
 

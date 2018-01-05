@@ -125,58 +125,67 @@ module.exports = poloniex =
     WS = require('ws')
     wsuri = "wss://api2.poloniex.com"
 
-    connection = new WS(wsuri, [], {})
+    create_connection = -> 
+      connection = new WS(wsuri, [], {})
 
-    connection.onopen = (e) ->
-      connection.keepAliveId = setInterval -> 
-        connection.send('.')
-      , 60000
+      connection.onopen = (e) ->
+        connection.keepAliveId = setInterval -> 
+          connection.send('.')
+        , 60000
 
-      console.log '...engine is now receiving live updates'
+        console.log '...engine is now receiving live updates'
 
-      lag_logger?(99999)
-         # record an initial laggy connection to give engine a little 
-         # time to recalibrate history in case there was a reconnection
-         # where we missed some trades. 
+        lag_logger?(99999)
+           # record an initial laggy connection to give engine a little 
+           # time to recalibrate history in case there was a reconnection
+           # where we missed some trades. 
 
-      connection.send JSON.stringify {command: 'subscribe', channel: "#{config.c1}_#{config.c2}"}
+        connection.send JSON.stringify({command: 'subscribe', channel: "#{config.c1}_#{config.c2}"}), (error) ->
+          if error 
+            connection.terminate()
+            setTimeout ->
+              console.log '...trying to reconnect'
 
-      callback()
+              create_connection()
+            , 500
 
-    connection.onmessage = (msg) -> 
-      if !msg || !msg.data 
-        console.error '...empty data returned by poloniex live update', msg 
-        return
+        callback()
 
-      data = JSON.parse(msg.data)
+      connection.onmessage = (msg) -> 
+        if !msg || !msg.data 
+          console.error '...empty data returned by poloniex live update', msg 
+          return
 
-      if data.error 
-        console.error 'poloniex sent error in live update', data.error
-        return
+        data = JSON.parse(msg.data)
 
-      for trade in (data[2] or []) when trade[0] == 't'
-        opts.new_trade_callback 
-          rate: trade[3]
-          amount: trade[4]
-          total: trade[3] * trade[4]
-          date: trade[5]
+        if data.error 
+          console.error 'poloniex sent error in live update', data.error
+          return
+
+        for trade in (data[2] or []) when trade[0] == 't'
+          opts.new_trade_callback 
+            rate: trade[3]
+            amount: trade[4]
+            total: trade[3] * trade[4]
+            date: trade[5]
 
 
-    connection.onclose = (e) -> 
-      console.log '...lost connection to live feed from exchange',
-        event: e 
-         
-      setTimeout ->
-        console.log '...trying to reconnect'
-        connection = new WS(wsuri, [], {})
-      , 500
+      connection.onclose = (e) -> 
+        console.log '...lost connection to live feed from exchange',
+          event: e 
+           
+        setTimeout ->
+          console.log '...trying to reconnect'
+          create_connection()
+        , 500
 
-    connection.on 'unexpected-response', (request, response) ->
-      console.error('error from poloniex', "unexpected-response (statusCode: #{response.statusCode}, #{}{response.statusMessage}")
+      connection.on 'unexpected-response', (request, response) ->
+        console.error('error from poloniex', "unexpected-response (statusCode: #{response.statusCode}, #{}{response.statusMessage}")
 
-    connection.onerror = (e) ->
-      console.error('error from poloniex:', e)
-    
+      connection.onerror = (e) ->
+        console.error('error from poloniex:', e)
+
+    create_connection()
 
 
 
