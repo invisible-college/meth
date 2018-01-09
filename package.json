@@ -8,10 +8,12 @@
   "dependencies": {
     "coffee-script": "^1.12.7",
     "crypto": "latest",
+    "better-sqlite3": "latest",
     "express": "^4.15.3",
     "gdax": "git://github.com/coinbase/gdax-node.git#master",
     "heapdump": "latest",
     "mathjs": "^3.18.1",
+    "minimist": "^1.2.0",
     "progress": "latest",
     "querystring": "latest",
     "request": "latest",

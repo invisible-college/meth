@@ -1752,11 +1752,22 @@ dom.BANK = ->
       c2: 0
 
 
-    last_period = price_data.c1xc2.length
+    last_period = price_data.c1xc2.length - 1
 
-    $c1 = price_data.c1?[last_period - 1].close or 1
-    $c2 = price_data.c2?[last_period - 1].close or price_data.c1xc2?[last_period - 1].close
+    while !$c1 || !$c2
+      if config.c1 == config.accounting_currency
+        $c1 = 1 
+        
+        if !$c2 
+          $c2 = price_data.c1xc2[last_period]?.close
 
+      else 
+        if !$c1
+          $c1 = price_data.c1[last_period]?.close
+        if !$c2
+          $c2 = price_data.c2[last_period]?.close 
+      
+      last_period -= 1
 
 
     balance_sum_from_positions = 

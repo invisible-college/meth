@@ -33,7 +33,7 @@ one_tick = ->
   
   console.log "TICKING! #{all_lag.length} queries with #{Math.average(all_lag)} avg lag"
 
-  history.load_price_data (time.earliest or tick.started) - tick.history_to_keep, now(), ->
+  cb = ->
     update_position_status ->
       update_account_balances ->
 
@@ -66,7 +66,8 @@ one_tick = ->
                 latest: tick.time
               bus.save time          
           , 10
-  
+          
+  history.load_price_data (time.earliest or tick.started) - tick.history_to_keep, now(), cb, cb
  
  
 
@@ -103,10 +104,15 @@ update_position_status = (callback) ->
           if pos.created < earliest 
             earliest = pos.created
 
+      if earliest == Infinity # no open trades to check 
+        callback?()
+        return
+
       start_checking_at = earliest
 
     start_checking_at -= 60 * 1000 # request an extra minute of fills to be safe
     check_to = now()
+
 
     exchange.get_my_fills 
       c1: config.c1 
@@ -135,6 +141,7 @@ update_position_status = (callback) ->
 
             completed = true
             t.fills = []
+
             for order_id in t.orders when order_id
               if open_orders[order_id]
                 completed = false 
@@ -299,12 +306,9 @@ update_trade = (opts, callback) ->
       trade.current_order = new_order
       bus.save pos if pos.key
 
-      console.log 'MOVED POSITION', trade
-
     callback result.error
 
   if trade.current_order
-    console.log 'MOVING POSITION', trade
     exchange.move_order
       order_id: trade.current_order
       rate: rate
@@ -368,15 +372,15 @@ update_account_balances = (callback) ->
         x_sheet.on_order.c2 = parseFloat balance.on_order
 
     if !initialized
-      c1_budget = config.c1_budget or x_sheet.balances.c1
-      c2_budget = config.c2_budget or x_sheet.balances.c2
+      c1_deposit = config.c1_deposit or x_sheet.balances.c1
+      c2_deposit = config.c2_deposit or x_sheet.balances.c2
 
       sheet.balances = 
-        c1: c1_budget
-        c2: c2_budget
+        c1: c1_deposit
+        c2: c2_deposit
       sheet.deposits = 
-        c1: c1_budget
-        c2: c2_budget        
+        c1: c1_deposit
+        c2: c2_deposit        
       sheet.on_order = 
         c1: 0 
         c2: 0 
@@ -387,11 +391,11 @@ update_account_balances = (callback) ->
       for dealer in dealers
         sheet[dealer] = 
           deposits: 
-            c1: c1_budget / num_dealers 
-            c2: c2_budget / num_dealers 
+            c1: c1_deposit / num_dealers 
+            c2: c2_deposit / num_dealers 
           balances: 
-            c1: c1_budget / num_dealers 
-            c2: c2_budget / num_dealers 
+            c1: c1_deposit / num_dealers 
+            c2: c2_deposit / num_dealers 
           on_order:
             c1: 0 
             c2: 0 
@@ -416,6 +420,7 @@ update_account_balances = (callback) ->
         else 
           buy = pos.exit
           sell = pos.entry
+
 
         if buy
           # used or reserved for buying remaining eth
@@ -478,8 +483,9 @@ update_account_balances = (callback) ->
 
     console.assert sheet.deposits.c1 + btc <= x_sheet.balances.c1 && sheet.deposits.c2 + eth <= x_sheet.balances.c2,
       message: "Dealers have more balance than available"
-      c1: sheet.deposits.c1 + btc
-      c2: sheet.deposits.c2 + eth
+      c1: btc
+      c2: eth
+      deposits: sheet.deposits
       exchange_balances: x_sheet.balances
 
 
@@ -572,6 +578,7 @@ operation = module.exports =
     bus.honk = false
 
     if clear_old && fs.existsSync(db_name)
+      console.log 'Destroying old db'
       fs.unlinkSync(db_name) 
 
     bus.sqlite_store
@@ -584,7 +591,7 @@ operation = module.exports =
 
     global.del = bus.del 
 
-    save key: 'operation'
+    #save key: 'operation'
 
 
     require 'coffee-script'
@@ -593,6 +600,7 @@ operation = module.exports =
 
 
     bus.http.use('/node_modules', express.static('node_modules'))
+    bus.http.use('/node_modules', express.static('meth/node_modules'))
     bus.http.use('/meth/vendor', express.static('meth/vendor'))
 
 
@@ -632,14 +640,13 @@ operation = module.exports =
 
       else return source
 
-
     bus.http.get '/*', (r,res) => 
 
       paths = r.url.split('/')
       paths.shift() if paths[0] == ''
 
       prefix = ''
-      server = "statei://localhost:#{port}"
+      server = "statei://#{get_ip_address()}:#{port}"
 
       html = """
         <!DOCTYPE html>
@@ -669,4 +676,4 @@ operation = module.exports =
 
       res.send(html)
 
-
+    bus.http.use('/node_modules', express.static('node_modules'))

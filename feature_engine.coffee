@@ -235,9 +235,7 @@ initialize_feature = (engine, name, func) ->
     weight = args?.weight or 1
     vel_weight = args?.vel_weight or ''
 
-    ```
-    key = `${right_now - t * resolution}-${right_now - t2 * resolution}-${weight}-${vel_weight}`
-    ```
+    key = "#{right_now - t * resolution}-#{right_now - t2 * resolution}-#{weight}-#{vel_weight}"
 
     val = cache[key]
 
@@ -278,9 +276,7 @@ initialize_feature = (engine, name, func) ->
     weight = args?.weight or 1
     vel_weight = args?.vel_weight or ''
 
-    ```
-    key = `${right_now - t * resolution}-${right_now - t2 * resolution}-${weight}-${vel_weight}`
-    ```
+    key = "#{right_now - t * resolution}-#{right_now - t2 * resolution}-#{weight}-#{vel_weight}"
 
     val = cache[key]
     if !val?

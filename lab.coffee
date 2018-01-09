@@ -123,7 +123,7 @@ simulate = (ts, callback) ->
     complete: '='
     incomplete: ' '
     width: 40
-    total: Math.ceil (time.latest - time.earliest) / pusher.tick_interval
+    total: Math.ceil (time.latest - time.earliest) / (.0 * pusher.tick_interval_no_unfilled + 1.0 * pusher.tick_interval)
     renderThrottle: 500
 
   ticks = 0
@@ -176,8 +176,17 @@ simulate = (ts, callback) ->
 
     t = Date.now()
 
-    start += pusher.tick_interval
-    tick.time += pusher.tick_interval
+    has_unfilled = false 
+    for dealer,positions of open_positions when positions.length > 0
+      for pos in positions 
+        if (pos.entry && !pos.entry.closed) || (pos.exit && !pos.exit.closed)
+          has_unfilled = true 
+          break 
+      break if has_unfilled
+
+
+    start += if has_unfilled then pusher.tick_interval_no_unfilled else pusher.tick_interval
+    tick.time += if has_unfilled then pusher.tick_interval_no_unfilled else pusher.tick_interval
 
     ###########################
     # Find trades that we care about this tick. history.trades is sorted newest first

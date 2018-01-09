@@ -29,9 +29,7 @@ f.volume = (engine, args) ->
   t2 = args.t2 or t
   weight = args.weight or 1
 
-  ```
-  k = `${engine.now - t * engine.resolution}-${weight}-${engine.now - t2 * engine.resolution}`
-  ```
+  k = "#{engine.now - t * engine.resolution}-#{weight}-#{engine.now - t2 * engine.resolution}"
 
   if k of engine.volume_cache
     return engine.volume_cache[k]
@@ -73,9 +71,8 @@ f.price = (engine, args) ->
   t = args.t or 0
   t2 = args.t2 or t
 
-  ```
-  k = `${engine.now - t * engine.resolution}-${engine.now - t2 * engine.resolution}`
-  ```
+
+  k = "#{engine.now - t * engine.resolution}-#{engine.now - t2 * engine.resolution}"
 
   if !(k of engine.price_cache)
 
@@ -368,9 +365,8 @@ f.velocity = (engine, args) ->
   weight = args.weight or 1
   t = args.t or 0
 
-  ```
-  k = `${engine.now - t * engine.resolution}-${weight}`
-  ```
+  k = "#{engine.now - t * engine.resolution}-#{weight}"
+
   if k of engine.velocity_cache 
     return engine.velocity_cache[k]
   else 
@@ -408,9 +404,8 @@ f.acceleration = (engine, args) ->
   vel_weight = args.vel_weight or 1
   t = args.t or 0
 
-  ```
-  k = `${engine.now - t * engine.resolution}-${weight}-${vel_weight}`
-  ```
+  k = "#{engine.now - t * engine.resolution}-#{weight}"
+
   if k of engine.acceleration_cache 
     return engine.acceleration_cache[k]
   else 

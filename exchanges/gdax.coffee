@@ -12,7 +12,7 @@ GDAX_client = (opts) ->
       client = new Gdax.AuthenticatedClient api_credentials.key, api_credentials.secret, api_credentials.pass
       client.productID = product_id
     else 
-      client = new Gdax.PublicClient(product_id)
+      client = new Gdax.PublicClient()
     gdax.client = client 
   gdax.client
   
@@ -192,6 +192,7 @@ find_page_for_hour = (opts, callback) ->
 
 getProductHistoricRates = ({start, end, granularity}, cb) ->
   request = require('request')
+
   request 
     qs: 
       start: start
@@ -276,6 +277,7 @@ module.exports = gdax =
       "LTC-USD": 1475690400 
       "ETH-BTC": 1463512661
       "LTC-BTC": 1475690400
+      "BCH-USD": 1513728000
 
     # time after which a pair has sustained 1-week exponentially 
     # weighted moving average of hourly USD transacted > $50k
@@ -285,6 +287,7 @@ module.exports = gdax =
       "LTC-USD": 1491091200 # after 4/2/17
       "ETH-BTC": 1489449600 # after 3/14/17
       "LTC-BTC": 1493769600 # after 5/3/17
+      "BCH-USD": 1513728000
 
 
 
@@ -323,27 +326,39 @@ module.exports = gdax =
     create_connection = -> 
       WS = require('ws')
       wsuri = "wss://ws-feed.gdax.com"
-      conn = new WS(wsuri, [], {})
+      connection = new WS(wsuri, [], {})
 
-      conn.onopen = (e) ->
+      reconnect = -> 
+        connection.terminate()
+        setTimeout ->
+          console.log '...trying to reconnect'
 
-        conn.keepAliveId = setInterval -> 
-          conn.ping('keepalive')
+          create_connection()
+        , 500
+
+      connection.onopen = (e) ->
+
+        connection.keepAliveId = setInterval -> 
+          connection.ping('keepalive')
         , 30000
 
         console.log '...engine is now receiving live updates'
         lag_logger?(99999)
 
-        conn.send JSON.stringify {type: 'subscribe', product_ids: ["#{config.c2}-#{config.c1}"]}
+        connection.send JSON.stringify({type: 'subscribe', product_ids: ["#{config.c2}-#{config.c1}"]}), (error) ->
+          reconnect() if error 
 
         callback()
 
-      conn.onmessage = (msg) ->
+      connection.onmessage = (msg) ->
         if !msg || !msg.data 
           console.error '...empty data returned by gdax live update', msg 
           return
 
         data = JSON.parse(msg.data)
+
+        if data.type == 'error'
+          console.error "Websocket got an error", data
 
         return if data.type != 'match'
 
@@ -357,16 +372,13 @@ module.exports = gdax =
 
 
           
-      conn.onclose = (msg) -> 
+      connection.onclose = (msg) -> 
         console.log '...lost connection to live feed from exchange',
           event: msg 
-           
-        setTimeout ->
-          console.log '...trying to reconnect'
-          create_connection()
-        , 500
+        
+        reconnect()
 
-      conn.onerror = (err) ->
+      connection.onerror = (err) ->
         console.error('error from gdax:', err) 
 
     create_connection()
@@ -411,15 +423,11 @@ module.exports = gdax =
           maker: fill.liquidity == 'M'
       callback fills
 
-    # depaginated_request 'getFills', 
-    #   product_id: "#{opts.c2}-#{opts.c1}"
-    #   start: opts.start
-    # , cb 
-
-    depaginated_request 'getFills', {
+    args = 
       product_id: GDAX_client(opts).productID
       start: opts.start
-    }, cb
+
+    depaginated_request 'getFills', args, cb
 
 
 
@@ -437,10 +445,11 @@ module.exports = gdax =
 
       callback open_orders
 
-    depaginated_request 'getOrders', 
+    args = 
       status: 'open'
       product_id: "#{opts.c2}-#{opts.c1}"
-    , cb 
+
+    depaginated_request 'getOrders', args, cb
 
 
 

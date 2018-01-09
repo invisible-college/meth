@@ -80,7 +80,7 @@ learn_strategy = (name, teacher, strat_dealers) ->
 
 
 
-init = ({history, clear_all_positions, take_position, cancel_unfilled, update_exit}) -> 
+init = ({history, clear_all_positions, take_position, cancel_unfilled, update_trade}) -> 
   global.history = history
   for name in get_dealers() 
     dealer_data = from_cache name
@@ -94,6 +94,7 @@ init = ({history, clear_all_positions, take_position, cancel_unfilled, update_ex
   pusher.last_checked_unfilled = {}
 
   tick_interval = null
+  tick_interval_no_unfilled = null
   for name in get_all_actors() 
     dealer_data = from_cache name
     dealer = dealers[name]
@@ -118,9 +119,13 @@ init = ({history, clear_all_positions, take_position, cancel_unfilled, update_ex
 
     intervals = [   
       dealer_data.settings.eval_entry_every_n_seconds or config.eval_entry_every_n_seconds
-      dealer_data.settings.eval_exit_every_n_seconds or config.eval_exit_every_n_seconds
-      dealer_data.settings.eval_unfilled_every_n_seconds or config.eval_unfilled_every_n_seconds
     ]
+
+    if !dealer_data.settings.never_exits
+      intervals.push dealer_data.settings.eval_exit_every_n_seconds or config.eval_exit_every_n_seconds
+
+    if !dealer_data.settings.series
+      intervals.push dealer_data.settings.eval_unfilled_every_n_seconds or config.eval_unfilled_every_n_seconds
 
     if !tick_interval
       tick_interval = intervals[0]
@@ -129,6 +134,19 @@ init = ({history, clear_all_positions, take_position, cancel_unfilled, update_ex
     tick_interval = Math.greatest_common_divisor intervals
 
 
+
+    intervals = [   
+      dealer_data.settings.eval_entry_every_n_seconds or config.eval_entry_every_n_seconds
+    ]
+
+    if !dealer_data.settings.never_exits
+      intervals.push dealer_data.settings.eval_exit_every_n_seconds or config.eval_exit_every_n_seconds
+
+    if !tick_interval_no_unfilled
+      tick_interval_no_unfilled = intervals[0]
+
+    intervals.push tick_interval_no_unfilled
+    tick_interval_no_unfilled = Math.greatest_common_divisor intervals
 
 
 
@@ -139,10 +157,11 @@ init = ({history, clear_all_positions, take_position, cancel_unfilled, update_ex
 
   pusher.take_position = take_position if take_position
   pusher.cancel_unfilled = cancel_unfilled if cancel_unfilled
-  pusher.update_exit = update_exit if update_exit
+  pusher.update_trade = update_trade if update_trade
 
   console.assert tick_interval
   pusher.tick_interval = tick_interval
+  pusher.tick_interval_no_unfilled = tick_interval_no_unfilled
 
 
 

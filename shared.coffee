@@ -211,13 +211,23 @@ module.exports =
       key
 
 
-
   wait_for_bus: (cb) -> 
     if !bus?
       setTimeout -> 
         wait_for_bus(cb)
     else 
       cb()
+
+  get_ip_address: -> 
+    ifaces = require('os').networkInterfaces()
+    address = null
+    for i, details of ifaces
+      for detail in details 
+        if detail.family == 'IPv4' && detail.internal == false 
+          address = detail.address
+
+    address or "localhost"
+
 
 
 

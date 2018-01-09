@@ -31,6 +31,7 @@ module.exports = poloniex =
       "ETC-USDT": 1469664000
       "ZEC-USDT": 1477612800
       "STR-USDT": 1426032000
+      "REP-USDT": 1475539200
 
       "ETH-BTC": 1438992000
       "LTC-BTC": 1424304000
@@ -39,10 +40,12 @@ module.exports = poloniex =
       "XMR-BTC": 1400457600
       "BCH-BTC": 1502668800
       "ZEC-BTC": 1477612800
-      "STR-BTC": 1407715200
       "NXT-BTC": 1390089600
       "EMC2-BTC": 1394928000
       "LSK-BTC": 1464048000
+      "STR-BTC": 1407715200
+      "REP-BTC": 1475539200
+      "GNO-BTC": 1493596800
 
       "ETC-ETH": 1469318400
       "ZEC-ETH": 1477612800
@@ -69,6 +72,9 @@ module.exports = poloniex =
       "BCH-BTC": 1502668800 # all * 
       "ZEC-BTC": 1489536000 # after 3/15/17 * 
 
+      "STR-BTC": 1491091200 # after 4/2/17
+      "REP-BTC": 1489881600 # after 3/19/17
+
       "BCH-ETH": 1509580800 # after 11/2/17 *
 
     if opts.only_high_volume
@@ -94,7 +100,7 @@ module.exports = poloniex =
       start: opts.start - opts.period
       end: opts.end + opts.period
     , (__, _, price_history) -> 
-      if !price_history
+      if !price_history || price_history.constructor != Array
         console.error "Error getting price history. Retrying."
         setTimeout ->
           poloniex.get_chart_data opts, callback 
@@ -128,9 +134,17 @@ module.exports = poloniex =
     create_connection = -> 
       connection = new WS(wsuri, [], {})
 
+      reconnect = -> 
+        connection.terminate()
+        setTimeout ->
+          console.log '...trying to reconnect'
+
+          create_connection()
+        , 500
+
       connection.onopen = (e) ->
         connection.keepAliveId = setInterval -> 
-          connection.send('.')
+          connection.send('.', (error) -> reconnect() if error)
         , 60000
 
         console.log '...engine is now receiving live updates'
@@ -141,13 +155,7 @@ module.exports = poloniex =
            # where we missed some trades. 
 
         connection.send JSON.stringify({command: 'subscribe', channel: "#{config.c1}_#{config.c2}"}), (error) ->
-          if error 
-            connection.terminate()
-            setTimeout ->
-              console.log '...trying to reconnect'
-
-              create_connection()
-            , 500
+          reconnect() if error 
 
         callback()
 
@@ -168,16 +176,13 @@ module.exports = poloniex =
             amount: trade[4]
             total: trade[3] * trade[4]
             date: trade[5]
+            type: if trade[2] == 1 then 'buy' else 'sell'
 
 
       connection.onclose = (e) -> 
         console.log '...lost connection to live feed from exchange',
           event: e 
-           
-        setTimeout ->
-          console.log '...trying to reconnect'
-          create_connection()
-        , 500
+        reconnect()
 
       connection.on 'unexpected-response', (request, response) ->
         console.error('error from poloniex', "unexpected-response (statusCode: #{response.statusCode}, #{}{response.statusMessage}")
@@ -251,13 +256,24 @@ module.exports = poloniex =
       command: 'returnCompleteBalances'
     , (err, resp, body) -> 
 
-      if !body || body.error 
+      if !body || body.error
         console.error 
           message: 'Error getting balance, retrying'
+          opts: opts
           error: body.error
+          body: body
 
         poloniex.get_my_balance opts, callback
       else 
+        for currency in opts.currencies 
+          if !body[currency]
+            console.error 
+              message: 'Poloniex returned incomplete balance, retrying'
+              opts: opts
+              currency: currency
+              body: body
+            poloniex.get_my_balance opts, callback        
+            return
 
         balances = {}
         for currency, balance of body
@@ -280,9 +296,10 @@ module.exports = poloniex =
         command: 'returnFeeInfo'
       , (err, resp, body) -> 
 
-        console.assert body && !body.error, 
-          message: 'Exchange fee returned error'
-          error: body.error
+        if !body || body.error 
+          console.log 'Exchange fee returned error, retrying'
+          poloniex.get_my_exchange_fee opts, callback 
+          return
 
         callback
           taker_fee: parseFloat body.takerFee

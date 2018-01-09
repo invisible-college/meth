@@ -52,7 +52,7 @@ operation.start
   eval_unfilled_every_n_seconds: 60
   c1: 'BTC'
   c2: 'ETH'
-  c1_budget: 0.005    # set your budget!!!
-  c2_budget: 0.1  
+  c1_deposit: 0.005    # set your budget!!!
+  c2_deposit: 0.1  
   accounting_currency: accounting_currency
   enforce_balance: true
