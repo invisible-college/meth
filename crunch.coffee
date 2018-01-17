@@ -152,11 +152,26 @@ compute_KPI = (dealer_or_dealers, name) ->
   start_idx = price_data.c1xc2.length - dates.length
 
   for period,idx in dates
-    BTC_2_ETH = price_data.c1xc2[start_idx + idx].open 
 
-    $c1 = price_data.c1?[start_idx + idx].open or 1
-    $c2 = price_data.c2?[start_idx + idx].open or BTC_2_ETH
+    last_period = start_idx + idx
+    $c1 = $c2 = BTC_2_ETH = null
+    while !$c1 || !$c2 || !BTC_2_ETH
+      if config.c1 == config.accounting_currency
+        $c1 = 1 
+        
+        if !$c2 
+          $c2 = price_data.c1xc2[last_period]?.close
 
+      else 
+        if !$c1
+          $c1 = price_data.c1[last_period]?.close
+        if !$c2
+          $c2 = price_data.c2[last_period]?.close 
+
+      if !BTC_2_ETH
+        BTC_2_ETH = price_data.c1xc2[last_period].close 
+      
+      last_period -= 1
 
 
     # trade-level metrics
@@ -291,7 +306,7 @@ KPI = (callback) ->
     KPI.ts = time.earliest
 
     # todo: will price data be accurate for live bot?
-    dates = KPI.dates = (o.date * 1000 for o in price_data.c1xc2 when o.date >= time.earliest - 86400 ) #&& o.date <= time.latest)
+    dates = KPI.dates = (o.date * 1000 for o in price_data.c1xc2 when o.date >= time.earliest - price_data.granularity ) #&& o.date <= time.latest)
     dates.sort()
     KPI.period_length = (dates[1] - dates[0]) / 1000
 
@@ -305,6 +320,9 @@ KPI = (callback) ->
 
     for dealer in dealers when dealer not in series_data
       stats = compute_KPI dealer
+      console.log dealer
+      if dealer == 'all'
+        console.log 'all', stats
       all_stats[dealer] = stats
 
   catch error 
@@ -428,9 +446,17 @@ indicators =
 
     return indicator_cache.sortino[s] if s of indicator_cache.sortino 
 
+
     returns = (r[1] for r in stats[s].metrics.returns)
     if returns.length == 0 
       return 0 
+
+    granularity = from_cache('price_data').granularity
+
+    if granularity != 86400
+      console.log 'Sortino is incorrectly calculated here because it assumes daily returns'
+
+    periods_per_year = 365
 
     yearly_return_target = 0.01 # 1% minimum yearly return goal. Treats not trading as slight negative.
     target_return = 100 * (Math.pow(1 + yearly_return_target, 1/365) - 1) # convert to daily return. Treats not trading as slight negative.

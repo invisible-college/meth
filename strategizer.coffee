@@ -49,8 +49,8 @@ series = module.exports =
       f = @features[v.resolution]
 
       if !v.dummy
-        period = 86400
-        idx = Math.floor((tick.time - tick.start) / period)
+        granularity = from_cache('price_data').granularity
+        idx = Math.floor((tick.time - tick.start) / granularity)
         $c2 = (bus.cache['price_data'].c2 or bus.cache['price_data'].c1xc2)[idx]?.close or 0
 
         pos = 

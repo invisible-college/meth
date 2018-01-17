@@ -10,7 +10,7 @@ module.exports = history =
 
 
   load_price_data: (start, end, callback, callback_empty) -> 
-    period = config.price_data_granularity or 86400
+    granularity = config.price_data_granularity or 86400
 
     fs.mkdirSync "price_data/" if !fs.existsSync("price_data/") 
     fs.mkdirSync "price_data/#{config.exchange}" if !fs.existsSync("price_data/#{config.exchange}")
@@ -25,25 +25,30 @@ module.exports = history =
       # now we're going to verify the integrity of the price data
       price_data = fetch 'price_data'
 
-      patch = (idx, pair) -> 
+      patch = (idx, pair, min_date) -> 
         console.log "Patching #{pair} candle at index #{idx} of #{price_data[pair].length}" 
-        cpy = bus.clone(price_data[pair][idx - 1])
-        cpy.date += period
+
+        copy_from_idx = if idx == 0 then 0 else idx - 1
+        cpy = bus.clone(price_data[pair][copy_from_idx])
+        if idx == 0
+          cpy.date = min_date
+        else 
+          cpy.date += granularity
         price_data[pair].splice idx, 0, cpy 
 
       # first we'll look to see if there are the same number of candles for each currency pair
       if price_data.c1 && price_data.c2
         console.assert config.accounting_currency != config.c1 
-        
+
         equal_lengths = -> 
           lengths = {}
-          for k,v of price_data when k != 'key' 
+          for k,v of price_data when k != 'key' && k != 'granularity'
             lengths[k] = v.length 
 
-          equal_lengths = true
+          equal = true
           for k,length of lengths 
-            equal_lengths &= length == lengths.c1xc2
-          equal_lengths
+            equal &= length == lengths.c1xc2
+          equal
 
         if !equal_lengths()
           console.log "Price data needs patching"
@@ -63,30 +68,26 @@ module.exports = history =
               break if !c1_date && !c2_date && !cx_date
 
               patch_needed = !(c1_date == c2_date == cx_date)
+
               if i == 0 && patch_needed
-                console.log "price data unworkable, trying again", 
-                  {c1_date, c2_date, cx_date}
-                setTimeout => 
-                  @load_price_data start, end, callback, callback_empty
-                , 1000
-                return
+                console.error "price data uneven at start. forward patching."
 
               if c1_date > Math.min(c2_date, cx_date)
-                patch i, 'c1'    
+                patch i, 'c1', Math.min(c2_date, cx_date)
               if c2_date > Math.min(c1_date, cx_date)
-                patch i, 'c2'    
+                patch i, 'c2', Math.min(c1_date, cx_date)
               if cx_date > Math.min(c1_date, c2_date)
-                patch i, 'c1xc2' 
-                  
+                patch i, 'c1xc2', Math.min(c1_date, c2_date)
+            
               if !patch_needed            
                 i += 1
 
-            console.assert equal_lengths(), msg: "patching failed"
+            console.assert equal_lengths(), msg: "patching failed", price_data: price_data
 
       # second we'll look to see if the candles are equally spaced by the desired granularity
-      for pair, data of price_data when pair != 'key'
+      for pair, data of price_data when pair != 'key' && pair != 'granularity'
         for candle, idx in data when idx > 0
-          if candle.date != data[idx - 1].date + period 
+          if candle.date != data[idx - 1].date + granularity 
             console.log "#{pair} has a missing candle at #{idx}"
             if config.disable_price_patching
               console.log "retrying"
@@ -117,13 +118,14 @@ module.exports = history =
 
     price_data = fetch('price_data')
 
-    period = config.price_data_granularity or 86400
+    granularity = config.price_data_granularity or 86400
 
-    fname = "price_data/#{config.exchange}/#{c1}-#{c2}-#{start}-#{end}-#{period}"
+    fname = "price_data/#{config.exchange}/#{c1}-#{c2}-#{start}-#{end}-#{granularity}"
 
     attempts = 0 
     store_chart = (price_history) ->
       price_data[name] = price_history
+      price_data.granularity = granularity
       bus.save price_data
       cb()
 
@@ -140,7 +142,7 @@ module.exports = history =
             end: end 
             c1: c1 
             c2: c2
-            period: period 
+            granularity: granularity 
           , data_callback
 
         data_callback = (price_history) =>
@@ -150,7 +152,7 @@ module.exports = history =
           catch err
             console.assert false, {err, price_history}
 
-          error = price_history.length == 0 || price_history[0].date > start || price_history[price_history.length - 1].date + period < end
+          error = price_history.length == 0 || price_history[0].date > start || price_history[price_history.length - 1].date + granularity < end
 
           if error 
             console.log "#{config.exchange} returned bad price history for #{c1}-#{c2}."
@@ -158,13 +160,13 @@ module.exports = history =
               console.log 
                 first: price_history[0].date
                 target_start: start 
-                last: price_history[price_history.length - 1].date + period
+                last: price_history[price_history.length - 1].date + granularity
                 target_end: end 
                 first_entry: price_history[0]
                 last_entry: price_history[price_history.length - 1]
 
               if callback_empty?
-                callback_empty({start: price_history[0].date, end: price_history[price_history.length - 1].date + period})
+                callback_empty({start: price_history[0].date, end: price_history[price_history.length - 1].date + granularity})
                 cb()
                 console.log 'not retrying.'
                 return

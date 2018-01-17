@@ -27,18 +27,20 @@ one_tick = ->
   return if tick.lock
      
   tick.lock = true
+
   tick.time = now()
 
-  time = fetch 'time'
-  
-  console.log "TICKING! #{all_lag.length} queries with #{Math.average(all_lag)} avg lag"
+
+  time = fetch 'time'  
+  console.log "TICKING @ #{tick.time}! #{all_lag.length} queries with #{Math.average(all_lag)} avg lag"
 
   cb = ->
     update_position_status ->
       update_account_balances ->
 
-        setTimeout -> # free thread to process any last trades
-          tick.time = now()
+        setImmediate -> # free thread to process any last trades
+
+          # tick.time = now()
           if !laggy
             balance = from_cache('balances')
             pusher.reset_open()
@@ -66,7 +68,7 @@ one_tick = ->
                 latest: tick.time
               bus.save time          
           , 10
-          
+
   history.load_price_data (time.earliest or tick.started) - tick.history_to_keep, now(), cb, cb
  
  
@@ -184,34 +186,33 @@ update_position_status = (callback) ->
 
 
             if (t.current_order && !(t.current_order of open_orders)) || t.force_canceled 
-              if t.to_fill > t.amount * .0001  #.0001 is arbitrary, meant to accommodate rounding issues
-                
+              if t.to_fill > t.amount * .0001  #.0001 is arbitrary, meant to accommodate rounding issues                
                 console.error
-                  message: 'Exchange thinks we\'ve completed the trade, but our filled amount does not seem to match'
+                  message: "#{config.exchange} thinks we\'ve completed the trade, but our filled amount does not match. We\'ll adjust and close"
                   trade: t 
                   fills: t.fills 
                   to_fill: t.to_fill
                   pos: pos.key
 
-              else 
 
-                total = 0
-                fees = 0
-                last = 0
-                amount = 0
+              total = 0
+              fees = 0
+              last = 0
+              amount = 0
 
-                for fill in (t.fills or [])
-                  total += fill.total
-                  fees += fill.fee
-                  amount += fill.amount
+              for fill in (t.fills or [])
+                total += fill.total
+                fees += fill.fee
+                amount += fill.amount
 
-                  if fill.date > last 
-                    last = fill.date
+                if fill.date > last 
+                  last = fill.date
 
-                t.amount = amount
-                t.total = total
-                t.fee = fees
-                t.closed = if t.force_canceled then tick.time else last
+              t.amount = amount
+              t.total = total
+              t.fee = fees
+              t.to_fill = 0 
+              t.closed = if t.force_canceled then now() else last
 
           if pos.entry?.closed && pos.exit?.closed
             buy = if pos.entry.type == 'buy' then pos.entry else pos.exit

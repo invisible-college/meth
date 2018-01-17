@@ -96,12 +96,12 @@ module.exports = poloniex =
     poloniex.query_public_api
       command: 'returnChartData'
       currencyPair: "#{opts.c1}_#{opts.c2}"
-      period: opts.period 
-      start: opts.start - opts.period
-      end: opts.end + opts.period
+      period: opts.granularity 
+      start: opts.start - opts.granularity
+      end: opts.end + opts.granularity
     , (__, _, price_history) -> 
       if !price_history || price_history.constructor != Array
-        console.error "Error getting price history. Retrying."
+        console.error "Error getting price history. Retrying.", price_history
         setTimeout ->
           poloniex.get_chart_data opts, callback 
         , 200
@@ -132,14 +132,30 @@ module.exports = poloniex =
     wsuri = "wss://api2.poloniex.com"
 
     create_connection = -> 
-      connection = new WS(wsuri, [], {})
+
+      try 
+        connection = new WS(wsuri, [], {})
+      catch
+        console.error "Couldn't create connection, trying again"
+        setTimeout create_connection, 500
+        return
 
       reconnect = -> 
-        connection.terminate()
+        try 
+          if connection.keepAliveId
+            clearInterval connection.keepAliveId
+          connection.terminate()
+        catch e 
+          console.log "Couldn't terminate connection. Proceeding."
         setTimeout ->
           console.log '...trying to reconnect'
 
-          create_connection()
+          try 
+            create_connection()
+          catch e 
+            console.error "Couldn't reconnect to websocket", e 
+            setTimeout reconnect, 500
+
         , 500
 
       connection.onopen = (e) ->
@@ -260,7 +276,7 @@ module.exports = poloniex =
         console.error 
           message: 'Error getting balance, retrying'
           opts: opts
-          error: body.error
+          error: body?.error
           body: body
 
         poloniex.get_my_balance opts, callback

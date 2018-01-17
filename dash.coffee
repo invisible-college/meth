@@ -1646,7 +1646,7 @@ dom.ACTIVITY = ->
 
     cols = [
 
-      ['Strategy', (pos) -> ('/' + pos.dealer).replace(/_|&/g,' ')]
+      ['Strategy', (pos) -> (pos.dealer).replace(/_|&/g,' ')]
       ['Created', (pos) -> "#{pos.created}"] # prettyDate(pos.created) ]
       ['Time to enter', (pos) -> 
         SPAN 
@@ -1682,7 +1682,14 @@ dom.ACTIVITY = ->
 
       ['Entry', (pos) -> 
         SPAN null,
-          if pos.entry?.closed then " #{prettyDate(pos.entry.closed)}" else ''
+          if pos.entry
+            if pos.entry.closed 
+              prettyDate(pos.entry.closed)
+            else if pos.entry.to_fill < pos.entry.amount 
+              "#{(100 * (1 - pos.entry.to_fill / pos.entry.amount)).toFixed(2)}%"
+            else 
+              "–"
+
       ]
       ['', (pos) -> 
         SPAN 
@@ -1690,7 +1697,18 @@ dom.ACTIVITY = ->
             fontFamily: mono
           if pos.entry then "#{pos.entry.type} #{pos.entry.amount?.toFixed(3)} #{if pos.entry.to_fill > 0 && pos.entry.fills.length > 0 then (pos.entry.amount - pos.entry.to_fill).toFixed(3) else ''} @ #{pos.entry.rate?.toFixed(5)}" else '?'
       ]
-      ['Exit', (pos) -> if pos.exit?.closed then " #{prettyDate(pos.exit.closed)}" else '-']
+      ['Exit', (pos) -> 
+        SPAN null,
+          if pos.exit
+            if pos.exit.closed 
+              prettyDate(pos.exit.closed)
+            else if pos.exit.to_fill < pos.exit.amount 
+              "#{(100 * (1 - pos.exit.to_fill / pos.exit.amount)).toFixed(2)}%"
+            else 
+              "–"
+
+      ]
+
       ['', (pos) -> 
         SPAN 
           style: 
@@ -1811,18 +1829,14 @@ dom.BANK = ->
             balance_sum_from_positions.c1 -= (if fill.fee? then fill.fee else fill.total * xfee)
 
 
-      console.log 
-        c1: balance_sum_from_positions.c1
-        c2: balance_sum_from_positions.c2
-        # c1_flat: btc 
-        # c2_flat: eth
-        # c1_on_order: btc_on_order
-        # c2_on_order: eth_on_order
-        c1_deposit: balances[dealer].deposits.c1
-        c2_deposit: balances[dealer].deposits.c2
+    # console.log 'bank',
+    #   $c1: $c1 
+    #   $c2: $c2
+    #   c1: balance_sum_from_positions.c1
+    #   c2: balance_sum_from_positions.c2
+    #   c1_deposit: balances[dealer].deposits.c1
+    #   c2_deposit: balances[dealer].deposits.c2
 
-
-    console.log balance_sum_from_positions, balance, total_on_order
     checks = true 
     for currency in currencies
       checks &&= (balance_sum_from_positions[currency] or 0).toFixed(2) == (balance[currency] + total_on_order[currency]).toFixed(2) && \
@@ -1830,7 +1844,7 @@ dom.BANK = ->
 
     cols = [
       ['', (currency) -> config[currency]]
-      ['In bank', (currency) -> "#{(balance[currency] + total_on_order[currency]).toFixed(2)}"]
+      ["In #{config.exchange}", (currency) -> "#{(balance[currency] + total_on_order[currency]).toFixed(2)}"]
       if !checks 
         ['Double check', (currency) -> ((balance_sum_from_positions[currency] or 0) - (balance[currency] + total_on_order[currency])  ).toFixed(2)]
       ['Available', (currency) -> (balance_sum_from_dealers[currency] or 0).toFixed(2)]

@@ -6,6 +6,7 @@ feature_engine = module.exports =
 
   features: {}
   resolutions: {}
+  
 
   define_feature: (name, func) ->
     feature_engine.features[name] = func 
@@ -21,6 +22,7 @@ feature_engine = module.exports =
 
     engine = 
       resolution: resolution
+      ticked_at: []
 
       subscribe_dealer: (name, dealer, dealer_data) -> 
 
@@ -58,6 +60,7 @@ feature_engine = module.exports =
           now: null
           last: null
           num_frames: 1
+          ticked_at: []
 
         for name, func of feature_engine.features
           engine[name] = initialize_feature engine, name, func
@@ -164,8 +167,9 @@ feature_engine = module.exports =
         #   #     frames[num_frames - 1].push frames[i][frames[i].length - 1]              
         #   #     break 
 
-        engine.last = engine.now
+        engine.last = engine.now # deprecated
         engine.now = tick_time
+        engine.ticked_at.push tick_time
         engine.trades = trades
         engine.frame_boundaries = frame_boundaries
         engine.frames = {}
@@ -222,7 +226,7 @@ initialize_feature = (engine, name, func) ->
     e = engine
     if e.now != tick.time 
       yyy = Date.now()      
-      engine.tick()
+      e.tick()
       t_.feature_tick += Date.now() - yyy if t_?
 
     cache = e.cache[name]
@@ -265,7 +269,7 @@ initialize_feature = (engine, name, func) ->
     # t_.x += Date.now() - xxx if t_?
     val
 
-  computer.past_result = (args, right_now) -> 
+  computer.past_result = (args, right_nowish) -> 
     e = engine
     cache = e.cache[name]
     next_cache = e.next_cache[name]
@@ -275,6 +279,22 @@ initialize_feature = (engine, name, func) ->
     t2 = args?.t2 or t
     weight = args?.weight or 1
     vel_weight = args?.vel_weight or ''
+
+    idx = e.ticked_at.length - 1
+    while idx > 0 
+      right_now = e.ticked_at[idx]
+      if Math.abs(right_now - right_nowish) < Math.abs(e.ticked_at[idx - 1] - right_nowish)
+        break 
+      idx -= 1
+
+    if Math.abs(right_now - right_nowish) > pusher.tick_interval
+      # console.log
+      #   message: 'requesting value not in cache, returning null'
+      #   key: key 
+      #   args: args
+      #   name: name
+      #   right_now: right_now
+      return null
 
     key = "#{right_now - t * resolution}-#{right_now - t2 * resolution}-#{weight}-#{vel_weight}"
 

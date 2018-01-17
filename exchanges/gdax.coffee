@@ -6,16 +6,14 @@ fs = require('fs')
 RATE_LIMIT = 1000
 
 GDAX_client = (opts) ->
-  if !gdax.client 
-    product_id = "#{opts.c2 or config.c2}-#{opts.c1 or config.c1}"
-    if api_credentials?
-      client = new Gdax.AuthenticatedClient api_credentials.key, api_credentials.secret, api_credentials.pass
-      client.productID = product_id
-    else 
-      client = new Gdax.PublicClient()
-    gdax.client = client 
-  gdax.client
+  product_id = "#{opts.c2 or config.c2}-#{opts.c1 or config.c1}"
+  if api_credentials?
+    client = new Gdax.AuthenticatedClient api_credentials.key, api_credentials.secret, api_credentials.pass
+    client.productID = product_id
+  else 
+    client = new Gdax.PublicClient()
   
+  client  
     
 write_trades = (hour, trades, c1, c2) -> 
   if hour + 1 <= current_hour && trades?.length > 0
@@ -208,11 +206,13 @@ getProductHistoricRates = ({start, end, granularity}, cb) ->
 
 load_chart_data = (client, opts, callback) -> 
 
-  granularity = opts.period
+  granularity = opts.granularity
   chunk_size = granularity * 10000  # load at most 20 candles per
 
   all_data = []
   
+  productID = "#{opts.c2 or config.c2}-#{opts.c1 or config.c1}"
+
   i = 0 
   next = -> 
     start_sec = opts.start + chunk_size * i 
@@ -227,7 +227,7 @@ load_chart_data = (client, opts, callback) ->
       if error || !data || data.message
         console.error {message: 'error getting chart data, trying again', error: error, message: data?.message}
         setTimeout -> 
-          client.getProductHistoricRates client.productID, {start, end, granularity}, cb
+          client.getProductHistoricRates productID, {start, end, granularity}, cb
 
         , 1000
         return 
@@ -244,7 +244,8 @@ load_chart_data = (client, opts, callback) ->
       else  
         callback [].concat all_data...
 
-    client.getProductHistoricRates client.productID, {start, end, granularity}, cb
+
+    client.getProductHistoricRates productID, {start, end, granularity}, cb
 
   next()
 
@@ -326,20 +327,40 @@ module.exports = gdax =
     create_connection = -> 
       WS = require('ws')
       wsuri = "wss://ws-feed.gdax.com"
-      connection = new WS(wsuri, [], {})
+
+      try 
+        connection = new WS(wsuri, [], {})
+      catch
+        console.error "Couldn't create connection, trying again"
+        setTimeout create_connection, 500
+        return
 
       reconnect = -> 
-        connection.terminate()
+        try 
+          if connection.keepAliveId
+            clearInterval connection.keepAliveId
+          connection.terminate()
+        catch e 
+          console.log "Couldn't terminate connection. Proceeding."
+
         setTimeout ->
           console.log '...trying to reconnect'
 
-          create_connection()
-        , 500
+          try 
+            create_connection()
+          catch e 
+            console.error "Couldn't reconnect to websocket", e 
+            setTimeout reconnect, 500
+        , 500 
 
       connection.onopen = (e) ->
 
         connection.keepAliveId = setInterval -> 
-          connection.ping('keepalive')
+          try 
+            connection.ping('keepalive')
+          catch e
+            console.log "Websocket ping failed!", e 
+            reconnect()
         , 30000
 
         console.log '...engine is now receiving live updates'
@@ -360,7 +381,8 @@ module.exports = gdax =
         if data.type == 'error'
           console.error "Websocket got an error", data
 
-        return if data.type != 'match'
+        if data.type != 'match'
+          return 
 
         trade = 
           rate: parseFloat(data.price)
@@ -459,7 +481,7 @@ module.exports = gdax =
 
     cb = (error, response, data) ->
       if error || !data || data.message
-        console.error {message: "error getting data for #{method}, trying again", error: error, message: data?.message}
+        console.error {message: "error getting my balance, trying again", error: error, message: data?.message}
         
         setTimeout -> 
           client.getAccounts cb
@@ -495,9 +517,18 @@ module.exports = gdax =
       type: if opts.market then 'market' else 'limit'
     , (data) -> 
       callback order_id: data.id
+    , (error, response, data) -> 
+      if data.message?.indexOf('Order size is too small') > -1
+        return false 
+      else 
+        return true # retry on error
 
   cancel_order: (opts, callback) -> 
-    queued_request 'cancelOrder', opts.order_id, callback 
+    queued_request 'cancelOrder', opts.order_id, callback, (error, response, data) -> 
+      if data.message == 'Order already done'
+        return false 
+      else 
+        return true # retry
 
   move_order: (opts, callback) ->
     # GDAX doesn't have an atomic move_order function like Poloniex does
@@ -514,20 +545,24 @@ module.exports = gdax =
       , callback
 
 
-queued_request = (method, opts, callback) -> 
+queued_request = (method, opts, callback, error_callback) -> 
   client = GDAX_client opts
 
   ts = null 
   cb = (error, response, data) ->
     if error || !data || data.message
-      console.error "error carrying out #{method}, trying again",
+      console.error "error carrying out #{method}",
         error: error
         message: data?.message
       
-      setTimeout -> 
-        ts = now()
-        client[method] opts, cb
-      , 50
+      if error_callback?(error, response, data) || !error_callback
+        console.log 'Trying again.'
+        setTimeout -> 
+          ts = now()
+          client[method] opts, cb
+        , 50
+      else 
+        console.log 'Not trying again.'
     
     else
       outstanding_requests -= 1 
