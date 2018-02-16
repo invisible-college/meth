@@ -3,7 +3,7 @@ fs = require('fs')
 
 
 
-RATE_LIMIT = 1000
+RATE_LIMIT = 3
 
 GDAX_client = (opts) ->
   product_id = "#{opts.c2 or config.c2}-#{opts.c1 or config.c1}"
@@ -24,14 +24,48 @@ write_trades = (hour, trades, c1, c2) ->
 
 
 
+trade_ids = {}
+times_sent = []
+
+get_wait = -> 
+  noww = Date.now()
+  while times_sent.length > 0 && noww - times_sent[0] > 1000
+    times_sent.shift()
+
+  if times_sent.length < RATE_LIMIT
+    return 0 
+  else 
+    earliest = times_sent[0]
+    
+    wait_for = earliest + 1000 - noww
+    if wait_for < 0 
+      wait_for = 0           
+    return wait_for
+
 get_trades = (client, c1, c2, hours, after, stop_when_cached, callback, stop_after_hour) -> 
   cb = (error, response, data) -> 
     i += 1 
+
+    if Math.random() > .999
+      RATE_LIMIT++
+      console.log {RATE_LIMIT}
+
+    # console.log {RATE_LIMIT}
     if error || !data || data.message || !response
-      console.error {message: 'error downloading trades! trying again', error: error, data: data}
+
+      if data?.message == 'Rate limit exceeded'
+        console.log '***'
+      else 
+        console.error {message: 'error downloading trades! trying again', error: error, data: data, c1, c2, after, stop_when_cached, callback, stop_after_hour}
+      
       setTimeout ->
+        if Math.random() > .9 && RATE_LIMIT > 1
+          RATE_LIMIT--
+          console.log {RATE_LIMIT}
+
+        times_sent.push Date.now()
         client.getProductTrades client.productID, {after: after, limit: limit}, cb 
-      , 1000
+      , get_wait()
       return
 
     later_hour = null
@@ -41,14 +75,19 @@ get_trades = (client, c1, c2, hours, after, stop_when_cached, callback, stop_aft
       hour = Math.floor(time / 60 / 60)
 
       hours[hour] ?= []
-      hours[hour].push 
-        date: time 
-        rate: parseFloat(trade.price)
-        amount: parseFloat(trade.size)
-        total: parseFloat(trade.size) * parseFloat(trade.price)
+      if trade.trade_id not of trade_ids        
+        hours[hour].push 
+          date: time 
+          rate: parseFloat(trade.price)
+          amount: parseFloat(trade.size)
+          total: parseFloat(trade.size) * parseFloat(trade.price)
+          tradeID: trade.trade_id
+
+        trade_ids[trade.trade_id] = 1
 
       if !later_hour
         later_hour = hour
+
       early_hour = hour
 
 
@@ -58,8 +97,8 @@ get_trades = (client, c1, c2, hours, after, stop_when_cached, callback, stop_aft
 
 
     continue_loading = true
-    if stop_when_cached 
-      continue_loading = !fs.existsSync "trade_history/gdax/#{c1}_#{c2}/#{early_hour}"
+    if stop_when_cached
+      continue_loading = !fs.existsSync("trade_history/gdax/#{c1}_#{c2}/#{early_hour}") || !fs.existsSync("trade_history/gdax/#{c1}_#{c2}/#{early_hour - 1}")
     if stop_after_hour
       continue_loading = early_hour >= stop_after_hour
 
@@ -72,13 +111,18 @@ get_trades = (client, c1, c2, hours, after, stop_when_cached, callback, stop_aft
           write_trades hr, hours[hr], c1, c2
           hr -= 1
 
-      setTimeout -> 
-        get_trades client, c1, c2, hours, response.headers['cb-after'], stop_when_cached, callback, stop_after_hour
-      , 1000 / RATE_LIMIT
+      get_trades client, c1, c2, hours, response.headers['cb-after'], stop_when_cached, callback, stop_after_hour
+
     else 
       callback?(hours)
 
-  client.getProductTrades client.productID, {after: after, limit: limit}, cb 
+  setTimeout ->
+    #RATE_LIMIT /= 2
+    times_sent.push Date.now()
+    client.getProductTrades client.productID, {after: after, limit: limit}, cb 
+  , get_wait()
+
+  
 
 
 
@@ -97,9 +141,6 @@ load_trades = (opts) ->
   if !fs.existsSync dir 
     fs.mkdirSync dir
 
-
-  hour = (opts.start + 1) / 60 / 60 
-
   cb = (error, response, data) -> 
 
     if error || !data || data.message
@@ -113,6 +154,7 @@ load_trades = (opts) ->
     current_hour = Math.floor(new Date(data[0].time).getTime() / 1000 / 60 / 60)
 
     latest_page = opts.starting_page or response.headers['cb-before'] 
+    trade_ids = {}
     get_trades client, opts.c1, opts.c2, {}, latest_page, opts.stop_when_cached, opts.cb, opts.stop_after_hour
   
   client.getProductTrades client.productID, {limit: 1}, cb
@@ -128,7 +170,7 @@ _find_page_for_hour = (client, hour, current_page, previous_page, callback) ->
      
   cb = (error, response, data) -> 
     if error || !data || data.message
-      console.error {message: 'error downloading trades! trying again', error: error, data: data}
+      console.error {message: 'error downloading trades! trying again', error: error, data: data, hour, current_page, previous_page}
       setTimeout -> 
         client.getProductTrades client.productID, {after: current_page, limit: limit}, cb
       , 1000
@@ -157,7 +199,7 @@ _find_page_for_hour = (client, hour, current_page, previous_page, callback) ->
       _find_page_for_hour client, hour, Math.round(next_page), current_page, callback
 
 
-  client.getProductTrades client.productID, {after: current_page, limit: limit}, cb 
+  client.getProductTrades client.productID, {after: current_page, limit: limit}, cb
 
 
 
@@ -183,31 +225,10 @@ find_page_for_hour = (opts, callback) ->
 
 
 
-
-# this will currently only work when less then 200 candles are to be returned.
-# e.g. when period is daily, this means 200 days of chart data.
-# should be pretty easy to make work with more: 
-
-getProductHistoricRates = ({start, end, granularity}, cb) ->
-  request = require('request')
-
-  request 
-    qs: 
-      start: start
-      end: end
-      granularity: granularity 
-    method: 'GET'
-    uri: 'https://api.gdax.com/products/BTC-USD/candles'
-    headers:
-       'User-Agent': 'gdax-node-client'
-       Accept: 'application/json'
-       'Content-Type': 'application/json' 
-  , cb
-
 load_chart_data = (client, opts, callback) -> 
 
   granularity = opts.granularity
-  chunk_size = granularity * 10000  # load at most 20 candles per
+  chunk_size =  granularity * 300  # load at most 300 candles per
 
   all_data = []
   
@@ -216,25 +237,28 @@ load_chart_data = (client, opts, callback) ->
   i = 0 
   next = -> 
     start_sec = opts.start + chunk_size * i 
-    end_sec = opts.start + chunk_size * (i + 1) - 1 
+    end_sec   = opts.start + chunk_size * (i + 1) - 1 
 
-    start = new Date(start_sec * 1000).toISOString()
-    end = new Date( Math.min(opts.end, end_sec) * 1000).toISOString()
+    start = new Date( start_sec * 1000                  ).toISOString()
+    end   = new Date( Math.min(opts.end, end_sec) * 1000).toISOString()
+
+    last = end_sec < opts.end
 
     cb = (error, response, data) ->
       #data = JSON.parse(data) if data
-      #console.log data
+
       if error || !data || data.message
         console.error {message: 'error getting chart data, trying again', error: error, message: data?.message}
         setTimeout -> 
           client.getProductHistoricRates productID, {start, end, granularity}, cb
-
         , 1000
         return 
-        
-      all_data.push data 
 
-      if end_sec < opts.end
+      data = (d for d in data when (i == 0 || start_sec - 1 <= d[0]) && (last || d[0] < end_sec + 1))
+        
+      all_data.push data
+
+      if last
         i += 1
         setTimeout -> 
           next()
@@ -255,14 +279,38 @@ waiting_to_execute = 0
 outstanding_requests = 0
 
 module.exports = gdax = 
+  minimum_order: -> 
+    mins = 
+      BTC: .001
+      ETH: .01
+      BCH: .01
+      LTC: .1
+      USD: 10
+      EUR: 10
+      GBP: 10
+
+    console.assert config.c2 of mins 
+    mins[config.c2]
+
+  minimum_rate_diff: -> 
+    mins = 
+      BTC: .00001
+      USD: .01
+      EUR: .01
+      GBP: .01
+
+    console.assert config.c1 of mins 
+    mins[config.c1]
+
+
+
   all_clear: -> outstanding_requests == 0 && waiting_to_execute == 0 
 
   download_all_trade_history: (opts, callback) ->
     load_trades
       c1: opts.c1 
       c2: opts.c2
-      stop_when_cached: true #opts.stop_when_cached
-      #starting_page: 427580
+      stop_when_cached: true
       cb: (hours) -> 
         for hour, trades of hours
           write_trades parseInt(hour), trades, opts.c1, opts.c2
@@ -294,12 +342,12 @@ module.exports = gdax =
 
     if opts.only_high_volume
       console.assert high_volume[pair],
-        msg: "high_volume for #{pair} on not listed in POLONIEX's get_earliest_trade method" 
+        msg: "high_volume for #{pair} on not listed in GDAX's get_earliest_trade method" 
 
       return high_volume[pair]
     else
       console.assert earliest_trades[pair],
-        msg: "earliest trade for #{pair} on not listed in POLONIEX's get_earliest_trade method" 
+        msg: "earliest trade for #{pair} on not listed in GDAX's get_earliest_trade method" 
 
       return earliest_trades[pair]
 
@@ -307,12 +355,20 @@ module.exports = gdax =
   get_chart_data: (opts, callback) -> 
     client = GDAX_client opts
     opts.start = opts.start - 10000
+
+
     load_chart_data client, opts, (chart_data) -> 
+
       # transform to Poloniex-like format
+      chart_data.sort (a,b) -> a[0] - b[0]
       transformed = []
-      for [time, low, high, open, close, volume] in chart_data
+      t = []
+      for c in chart_data 
+        [time, low, high, open, close, volume] = c
+        continue if opts.start - opts.granularity - 1 > time || time > opts.end + opts.granularity + 1  
+        t.push [time, low, high, open, close, volume]
         transformed.push 
-          date: new Date(time).getTime()
+          date: time
           high: parseFloat high 
           low: parseFloat low 
           open: parseFloat open
@@ -320,6 +376,7 @@ module.exports = gdax =
           volume: parseFloat volume 
 
       callback(transformed)
+
 
   subscribe_to_trade_history: (opts, callback) -> 
 
@@ -409,19 +466,22 @@ module.exports = gdax =
   get_trade_history: (opts, callback) -> 
     hour = Math.floor (opts.start + 1) / 60 / 60
     find_page_for_hour 
-        c1: opts.c1 
-        c2: opts.c2
-        hour: hour
+      c1: opts.c1 
+      c2: opts.c2
+      hour: hour
     , (starting_page) -> 
       load_trades
         starting_page: starting_page
         c1: opts.c1 
         c2: opts.c2
-        stop_after_hour: hour - 1
+        # stop_after_hour: hour - 1
+        stop_when_cached: true
         cb: (hours) -> 
+
           trades = hours[hour] or []
 
           write_trades hour, trades, opts.c1, opts.c2
+
 
           if trades.length == 0 
             console.log()
@@ -516,7 +576,8 @@ module.exports = gdax =
       product_id: "#{opts.c2}-#{opts.c1}"
       type: if opts.market then 'market' else 'limit'
     , (data) -> 
-      callback order_id: data.id
+      console.log 'place order GOT', data
+      callback order_id: data.id, error: data.error
     , (error, response, data) -> 
       if data.message?.indexOf('Order size is too small') > -1
         return false 
@@ -524,7 +585,10 @@ module.exports = gdax =
         return true # retry on error
 
   cancel_order: (opts, callback) -> 
-    queued_request 'cancelOrder', opts.order_id, callback, (error, response, data) -> 
+    queued_request 'cancelOrder', opts.order_id, (data) -> 
+      console.log 'cancel got', data
+      callback data
+    , (error, response, data) -> 
       if data.message == 'Order already done'
         return false 
       else 
@@ -533,16 +597,21 @@ module.exports = gdax =
   move_order: (opts, callback) ->
     # GDAX doesn't have an atomic move_order function like Poloniex does
 
-    gdax.cancel_order {order_id: opts.order_id}, -> 
-      console.log 'Done canceling now placing:', opts
-      gdax.place_order
-        type: opts.type
-        rate: opts.rate 
-        amount: opts.amount
-        c1: opts.c1
-        c2: opts.c2
-        market: opts.market
-      , callback
+    gdax.cancel_order {order_id: opts.order_id}, (data) -> 
+      if data?.message == 'Order already done'
+        console.log 'Cannot cancel because order is already done'
+        callback 
+          error: 'Order already done'
+      else 
+        console.log 'Done canceling now placing:', opts
+        gdax.place_order
+          type: opts.type
+          rate: opts.rate 
+          amount: opts.amount
+          c1: opts.c1
+          c2: opts.c2
+          market: opts.market
+        , callback
 
 
 queued_request = (method, opts, callback, error_callback) -> 
@@ -562,7 +631,8 @@ queued_request = (method, opts, callback, error_callback) ->
           client[method] opts, cb
         , 50
       else 
-        console.log 'Not trying again.'
+        console.log 'Not trying again. Returning to execution'
+        callback {error: data.message}
     
     else
       outstanding_requests -= 1 

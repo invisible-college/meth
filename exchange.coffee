@@ -11,6 +11,9 @@ module.exports = exchange =
   #####
   # PUBLIC API 
 
+  minimum_trade: -> exchange[config.exchange].minimum_order()
+  minimum_rate_diff: -> exchange[config.exchange].minimum_rate_diff()
+
   # opts: 
   # c1, c2
   get_earliest_trade: (opts) ->

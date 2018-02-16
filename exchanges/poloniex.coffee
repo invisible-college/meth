@@ -16,6 +16,31 @@ RATE_LIMIT = 6  # no more than 6 API requests per second
 module.exports = poloniex = 
   all_clear: -> outstanding_requests == 0 && queue.length == 0 
 
+  minimum_order: -> 
+    mins = 
+      BTC: .0001
+      ETH: .0001
+      XMR: .0001
+      STR: .1
+      BCH: .0001
+      LTC: .001
+      USDT: 1
+      DASH: .0001
+      REP: .01
+      ZEC: .0001
+      XRP: 1
+
+    console.assert config.c2 of mins 
+    mins[config.c2]
+
+  minimum_rate_diff: -> 
+    mins = 
+      BTC: .00000001
+
+    console.assert config.c1 of mins 
+    mins[config.c1]
+
+
   get_earliest_trade: (opts) ->
 
     pair = "#{opts.c2}-#{opts.c1}"
