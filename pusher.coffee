@@ -133,8 +133,6 @@ init = ({history, clear_all_positions, take_position, cancel_unfilled, update_tr
     intervals.push tick_interval
     tick_interval = Math.greatest_common_divisor intervals
 
-
-
     intervals = [   
       dealer_data.settings.eval_entry_every_n_seconds or config.eval_entry_every_n_seconds
     ]
@@ -148,8 +146,6 @@ init = ({history, clear_all_positions, take_position, cancel_unfilled, update_tr
     intervals.push tick_interval_no_unfilled
     tick_interval_no_unfilled = Math.greatest_common_divisor intervals
 
-
-
   history_buffer = (e.num_frames * res + 1 for res, e of feature_engine.resolutions)
   history_buffer = Math.max.apply null, history_buffer
 
@@ -159,7 +155,6 @@ init = ({history, clear_all_positions, take_position, cancel_unfilled, update_tr
   pusher.cancel_unfilled = cancel_unfilled if cancel_unfilled
   pusher.update_trade = update_trade if update_trade
 
-  console.assert tick_interval
   pusher.tick_interval = tick_interval
   pusher.tick_interval_no_unfilled = tick_interval_no_unfilled
 
@@ -201,7 +196,9 @@ find_opportunities = (balance) ->
     settings = dealer_data.settings
     dealer = dealers[name]
 
+
     eval_entry_every_n_seconds = settings.eval_entry_every_n_seconds or config.eval_entry_every_n_seconds
+
     if tick.time - pusher.last_checked_new_position[name] < eval_entry_every_n_seconds
       continue 
     pusher.last_checked_new_position[name] = tick.time
@@ -263,7 +260,8 @@ find_opportunities = (balance) ->
     # see if any open positions want to exit
     yyy = Date.now()      
 
-    for pos in open_positions[name] when !pos.exit && !pos.series_data
+    for pos in open_positions[name] when !pos.series_data && (!pos.exit || (pos.exit.fill_to? && pos.exit.fill_to >= pos.exit.to_fill ))
+
       opportunity = dealer.eval_whether_to_exit_position
         position: pos 
         dealer: name
@@ -295,13 +293,15 @@ find_opportunities = (balance) ->
     eval_unfilled_every_n_seconds = settings.eval_unfilled_every_n_seconds or config.eval_unfilled_every_n_seconds
     if tick.time - pusher.last_checked_unfilled[name] < eval_unfilled_every_n_seconds
       continue 
+
     pusher.last_checked_unfilled[name] = tick.time
 
 
     # see if any open positions want to exit
     yyy = Date.now()      
 
-    for pos in open_positions[name] when (pos.exit && !pos.exit.closed) || (pos.entry && !pos.entry.closed)
+
+    for pos in open_positions[name] when (pos.entry && !pos.entry.closed) || (pos.exit && ((!pos.exit.fill_to? && !pos.exit.closed) || (pos.exit.fill_to? && pos.exit.fill_to < pos.exit.to_fill)    ))
       opportunity = dealer.eval_unfilled_trades
         position: pos 
         dealer: name
@@ -350,14 +350,14 @@ execute_opportunities = (opportunities) ->
         force_cancel pos
 
       when 'exit'
-        exit_position {pos, rate: opportunity.rate, market_trade: opportunity.market, amount: opportunity.amount or pos.entry.amount}
+        exit_position {pos, opportunity} 
         take_position pos
 
       when 'update_exit'
-        update_exit pos, opportunity.rate
+        update_exit {pos, opportunity}
 
       when 'update_entry'
-        update_entry pos, opportunity.rate
+        update_entry {pos, opportunity}
 
 
 
@@ -391,7 +391,11 @@ check_wallet = (opportunities, balance) ->
     avail_ETH = dbalance.c2
 
     # console.log {message: 'yo', dealer: name, avail_ETH, avail_BTC, dealer_opportunities: by_dealer[name], balance: dbalance}
-    console.assert avail_BTC >= 0 && avail_ETH >= 0, {message: 'negative balance', dealer: name, avail_ETH, avail_BTC, dealer_opportunities: by_dealer[name], balance: dbalance}
+    if avail_BTC < 0 || avail_ETH < 0
+      out = if config.simulation then console.assert else console.error
+
+      out false, {message: 'negative balance', dealer: name, avail_ETH, avail_BTC, dealer_opportunities: by_dealer[name], balance: dbalance}
+
     for op in ops 
       r_ETH = op.required_c2 or 0
       r_BTC = op.required_c1 or 0
@@ -464,15 +468,20 @@ create_position = (spec, dealer) ->
 
   position
 
-exit_position = ({pos, rate, market_trade, amount}) ->
-  console.assert pos.entry, {message: 'position can\'t be exited because entry is undefined', pos: pos, rate: rate} 
+exit_position = ({pos, opportunity}) ->
+  console.assert pos.entry, {message: 'position can\'t be exited because entry is undefined', pos, opportunity} 
+
+  rate = opportunity.rate 
+  market_trade = opportunity.market 
+  amount = opportunity.amount or pos.entry.amount
   type = if pos.entry.type == 'buy' then 'sell' else 'buy'
-  amount = amount or pos.entry.amount
+
   pos.exit = 
     amount: amount
     type: type
     rate: rate
     to_fill: if market_trade && type == 'buy' then amount * rate else amount
+    fill_to: opportunity.fill_to
     market: if market_trade then true 
 
   if config.exchange == 'gdax' 
@@ -532,14 +541,19 @@ took_position = (pos, error) ->
       open_positions[pos.dealer].push pos
 
 
-update_exit = (pos, rate) ->
+update_exit = ({pos, opportunity}) ->
+  rate = opportunity.rate
 
-  # pay attention to case where both entry and exit are stuck b/c of partial fills
-
-  if pos.exit.closed && !pos.entry.closed  
+  if pos.exit.closed && !pos.entry.closed 
+    console.assert !pos.exit.fill_to?, {entry: pos.entry, exit: pos.exit}
     p = pos.exit 
     pos.exit = pos.entry 
     pos.entry = p 
+
+
+
+  if opportunity.fill_to? 
+    pos.exit.fill_to = opportunity.fill_to 
 
   if config.exchange == 'gdax'
     if config.c1 == 'USD' # can't have fractions of cents (at least on GDAX!)
@@ -572,9 +586,8 @@ update_exit = (pos, rate) ->
 
   last_exit = pos.exit.rate 
 
-  
   if pos.exit.type == 'buy'
-    # we need to adjust the *amount* we're buying because our buying power has decreased
+    # we need to adjust the *amount* we're buying because our buying power has changed
     amt_purchased = 0 
     total_sold = 0 
     for f in (pos.exit.fills or [])
@@ -608,18 +621,26 @@ update_exit = (pos, rate) ->
       set_expected_profit pos
 
   if pusher.update_trade
+    amt = new_amount
+    if opportunity.fill_to?
+      amt -= opportunity.fill_to
+      console.assert amt > 0
+      if config.exchange == 'gdax' 
+        amt = parseFloat((Math.floor(amt * 1000000) / 1000000).toFixed(6))
+
     pusher.update_trade 
       pos: pos
       trade: pos.exit
       rate: rate 
-      amount: new_amount
+      amount: amt
     , cb
   else 
     cb()
 
 
 # TODO: merge with update_exit
-update_entry = (pos, rate) ->
+update_entry = ({pos, opportunity}) ->
+  rate = opportunity.rate
 
   if config.exchange == 'gdax'
     if config.c1 == 'USD' # can't have fractions of cents (at least on GDAX!)

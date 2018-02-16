@@ -30,7 +30,6 @@ one_tick = ->
 
   tick.time = now()
 
-
   time = fetch 'time'  
   console.log "TICKING @ #{tick.time}! #{all_lag.length} queries with #{Math.average(all_lag)} avg lag"
 
@@ -141,12 +140,10 @@ update_position_status = (callback) ->
 
           for t in [pos.entry, pos.exit] when t && !t.closed && (t.orders?.length > 0 || t.force_canceled) 
 
-            completed = true
             t.fills = []
 
             for order_id in t.orders when order_id
               if open_orders[order_id]
-                completed = false 
                 if t.force_canceled
                   console.assert false,
                     message: 'force cancel did not work'
@@ -184,8 +181,13 @@ update_position_status = (callback) ->
                   order: order_id 
                   trade: t
 
+            completed = (t.current_order && !(t.current_order of open_orders)) || t.force_canceled 
 
-            if (t.current_order && !(t.current_order of open_orders)) || t.force_canceled 
+            if completed && t.to_fill > t.amount * .0001 && t.fill_to > t.amount * .0001
+              # ok, not *really* completed...
+              t.current_order = null 
+
+            else if completed
               if t.to_fill > t.amount * .0001  #.0001 is arbitrary, meant to accommodate rounding issues                
                 console.error
                   message: "#{config.exchange} thinks we\'ve completed the trade, but our filled amount does not match. We\'ll adjust and close"
@@ -194,10 +196,9 @@ update_position_status = (callback) ->
                   to_fill: t.to_fill
                   pos: pos.key
 
-
               total = 0
               fees = 0
-              last = 0
+              last = null
               amount = 0
 
               for fill in (t.fills or [])
@@ -213,6 +214,8 @@ update_position_status = (callback) ->
               t.fee = fees
               t.to_fill = 0 
               t.closed = if t.force_canceled then now() else last
+              if t.fill_to?
+                delete t.fill_to
 
           if pos.entry?.closed && pos.exit?.closed
             buy = if pos.entry.type == 'buy' then pos.entry else pos.exit
@@ -259,7 +262,7 @@ take_position = (pos, callback) ->
 
   error = false
   for trade, idx in trades
-    amount = trade.to_fill 
+    amount =  trade.to_fill - (trade.fill_to or 0)
 
     exchange.place_order
       type: trade.type
@@ -275,7 +278,7 @@ take_position = (pos, callback) ->
       if result.error 
         error = true 
         err = result.error     
-        console.log "GOT ERROR TAKING POSITION", {pos, trades_left, err}
+        console.error "GOT ERROR TAKING POSITION", {pos, trades_left, err}
         
       else 
         trade.current_order = result.order_id
@@ -290,8 +293,7 @@ take_position = (pos, callback) ->
         bus.save pos if pos.key
 
 
-update_trade = (opts, callback) -> 
-  {pos, trade, rate, amount} = opts 
+update_trade = ({pos, trade, rate, amount}, callback) -> 
 
   console.assert !trade.market
 
@@ -302,6 +304,7 @@ update_trade = (opts, callback) ->
     else
 
       new_order = result.order_id
+      trade.orders ?= []
       if new_order && new_order not in trade.orders 
         trade.orders.push new_order
       trade.current_order = new_order
@@ -355,7 +358,7 @@ cancel_unfilled = (pos, callback) ->
 
 update_account_balances = (callback) ->
   sheet = from_cache 'balances'
-  initialized = sheet.balances?
+  initialized = false # sheet.balances?
   dealers = get_dealers()
 
   exchange.get_my_balance {c1: config.c1, c2: config.c2}, (result) -> 
@@ -462,13 +465,27 @@ update_account_balances = (callback) ->
       dbalance.on_order.c1 = dbtc_on_order
       dbalance.on_order.c2 = deth_on_order
 
-      console.assert dbalance.balances.c1 >= 0 && dbalance.balances.c2 >= 0, 
-        message: 'negative balance!?!'
-        dealer: dealer
-        balance: sheet.balances
-        dbalance: sheet[dealer]
-        positions: positions
-        dealer: from_cache(dealer).positions
+      if dbalance.balances.c1 < 0 || dbalance.balances.c2 < 0
+        output = if config.simulation then console.assert else console.error
+
+        fills = []
+        for pos in positions
+          for trade in [pos.entry, pos.exit] when trade 
+            fills = fills.concat trade.fills
+            console.log trade
+            for fill in trade.fills
+              if fill.type == 'sell'
+                console.log "#{fill.total} -#{fill.amount} #{fill.fee}"
+              else 
+                console.log "-#{fill.total} #{fill.amount} #{fill.fee}"
+
+        output false, 
+          message: 'negative balance!?!'
+          dealer: dealer
+          balance: sheet.balances
+          dbalance: sheet[dealer]
+          positions: positions
+          fills: fills
 
     sheet.balances.c1 = sheet.deposits.c1 + btc
     sheet.balances.c2 = sheet.deposits.c2 + eth
