@@ -39,13 +39,13 @@ simulate = (ts, callback) ->
     check_unfilled: 0
     balance: 0
     pos_status: 0
-    gc: 0
-    x: 0 
-    y: 0 
-    z: 0 
-    a: 0 
-    b: 0 
-    c: 0
+    # gc: 0
+    # x: 0 
+    # y: 0 
+    # z: 0 
+    # a: 0 
+    # b: 0 
+    # c: 0
 
 
   price_data = fetch('price_data')
@@ -60,6 +60,8 @@ simulate = (ts, callback) ->
     if history.trades[end_idx].date > tick.time
       end_idx += 1        
       break 
+
+  start_idx = end_idx
 
   for trade,idx in history.trades 
     console.assert trade, {message: 'trade is null!', trade: trade, idx: idx}
@@ -115,7 +117,7 @@ simulate = (ts, callback) ->
 
   save balance
 
-  t = ':percent :etas :elapsed :ticks' 
+  t = ':perperper% :perbytrade% :etas :elapsed :ticks' 
   for k,v of t_
     t += " #{k}-:#{k}"
 
@@ -123,8 +125,8 @@ simulate = (ts, callback) ->
     complete: '='
     incomplete: ' '
     width: 40
-    total: Math.ceil (time.latest - time.earliest) / (.0 * pusher.tick_interval_no_unfilled + 1.0 * pusher.tick_interval)
     renderThrottle: 500
+    total: Math.ceil (time.latest - time.earliest) / (.0 * pusher.tick_interval_no_unfilled + 1.0 * pusher.tick_interval)
 
   ticks = 0
     
@@ -157,7 +159,7 @@ simulate = (ts, callback) ->
     console.time('saving db')
     global.timerrrr = Date.now()
     save balance
-    for name in get_all_actors()
+    for name in (get_all_actors() or [])
       d = from_cache name
       for pos in (d.positions or [])
         delete pos.last_exit if pos.last_exit
@@ -167,7 +169,7 @@ simulate = (ts, callback) ->
 
     console.log "\nDone simulating! That took #{(Date.now() - started_at) / 1000} seconds" if config.log
     console.log config if !config.multiple_times
-
+    console.log "PORT: #{bus.port}"
     if config.multiple_times
       reset() 
     callback?()
@@ -179,15 +181,18 @@ simulate = (ts, callback) ->
     has_unfilled = false 
     for dealer,positions of open_positions when positions.length > 0
       for pos in positions 
-        if (pos.entry && !pos.entry.closed) || (pos.exit && !pos.exit.closed)
+        if (pos.entry && !pos.entry.closed) || (pos.exit && ((!pos.exit.fill_to && !pos.exit.closed) || (pos.exit.fill_to && pos.exit.fill_to < pos.exit.to_fill)    ))
           has_unfilled = true 
           break 
       break if has_unfilled
 
+    inc = if has_unfilled 
+            pusher.tick_interval
+          else 
+            pusher.tick_interval_no_unfilled
 
-    start += if has_unfilled then pusher.tick_interval_no_unfilled else pusher.tick_interval
-    tick.time += if has_unfilled then pusher.tick_interval_no_unfilled else pusher.tick_interval
-
+    tick.time += inc
+    start += inc
     ###########################
     # Find trades that we care about this tick. history.trades is sorted newest first
     zzz = Date.now()    
@@ -251,7 +256,9 @@ simulate = (ts, callback) ->
       t_sec = {}
       for k,v of t_
         t_sec[k] = Math.round(v/1000)
-      bar.tick 1, extend {ticks}, t_sec
+      perperper = Math.round(100 * (tick.time - time.earliest) / (time.latest - time.earliest))
+      perbytrade = Math.round(100 * (start_idx - end_idx) / start_idx )
+      bar.tick 1, extend {ticks,perperper,perbytrade}, t_sec
     #####################
 
     ticks++
@@ -406,7 +413,7 @@ update_position_status = (end_idx, balance, dealers_with_open) ->
 
         status = global.position_status[key]
 
-        if trade.to_fill > 0 && (!status? || end_idx < status.idx + 100 )
+        if trade.to_fill > (trade.fill_to or 0) && (!status? || end_idx < status.idx + 100 )
           status = global.position_status[key] = fill_order trade, end_idx, status
           # console.log '\nFILLLLLLLL\n', key, end_idx, status?.idx, status?.fills?.length
 
@@ -421,15 +428,18 @@ update_position_status = (end_idx, balance, dealers_with_open) ->
             rate = fill.rate
 
             if trade.market && trade.type == 'buy'
-              done = amt * rate >= trade.to_fill
-              fill.total  = if !done then amt * rate else trade.to_fill
-              fill.amount = if !done then amt        else trade.to_fill / rate
+              to_fill = trade.to_fill - (trade.fill_to or 0)
+
+              done = amt * rate >= to_fill
+              fill.total  = if !done then amt * rate else to_fill
+              fill.amount = if !done then amt        else to_fill / rate
               trade.to_fill -= fill.total 
 
             else 
-              done = fill.amount >= trade.to_fill || trade.market
-              fill.amount = if !done then amt        else trade.to_fill 
-              fill.total  = if !done then amt * rate else trade.to_fill * rate
+              to_fill = trade.to_fill - (trade.fill_to or 0)
+              done = fill.amount >= to_fill || trade.market
+              fill.amount = if !done then amt        else to_fill 
+              fill.total  = if !done then amt * rate else to_fill * rate
               trade.to_fill -= fill.amount 
 
             fill.type = trade.type
@@ -447,9 +457,9 @@ update_position_status = (end_idx, balance, dealers_with_open) ->
 
         if trade.to_fill == 0
           trade.closed = if trade.force_canceled then tick.time else trade.fills[trade.fills.length - 1].date
+          if trade.fill_to?
+            delete trade.fill_to
           global.position_status[key] = undefined
-
-
 
       if (pos.entry?.closed && pos.exit?.closed) || (dealers[dealer].never_exits && pos.entry?.closed)
         pos.closed = Math.max pos.entry.closed, (pos.exit?.closed or 0)
@@ -517,16 +527,25 @@ update_position_status = (end_idx, balance, dealers_with_open) ->
 
       pos.profit = (balance.accounted_for.c1 - cur_c1) / pos.exit.rate + (balance.accounted_for.c2 - cur_c2) 
 
+      if pos.entry.type == 'sell' 
+        actual_exit = pos.entry.rate / pos.exit.rate - 1
+      else 
+        actual_exit = pos.exit.rate / pos.entry.rate  - 1   
+
 
 fill_order = (my_trade, end_idx, status) -> 
 
-  status ||= {}
+  status ||= {
+    fills: []
+    idx: false
+    became_maker: false 
+  }
 
   my_amount = my_trade.amount 
   my_rate = my_trade.rate
   is_sell = my_trade.type == 'sell'
   my_created = my_trade.created 
-  trade_lag = config.trade_lag  
+  order_placement_lag = config.order_placement_lag  
   is_market = my_trade.market
 
   if status.idx
@@ -534,20 +553,27 @@ fill_order = (my_trade, end_idx, status) ->
   else 
     start_at = end_idx
 
-  to_fill = my_trade.to_fill
+  to_fill = my_trade.to_fill - (my_trade.fill_to or 0)
+
+  console.assert to_fill > 0 
 
   status.fills ||= []
   fills = status.fills 
 
   init = false
+
   for idx in [start_at..0] by -1
     trade = history.trades[idx]
 
     if !init
-      if trade.date < my_created + trade_lag
+      if trade.date < my_created + order_placement_lag
         continue
       else 
         init = true 
+
+    if !status.became_maker
+      status.became_maker = trade.date - (my_created + order_placement_lag) > 1 * 60 || (is_sell && trade.rate < my_rate) || (!is_sell && trade.rate > my_rate)
+        
 
     if (!is_sell && trade.rate <= my_rate) || \
        ( is_sell && trade.rate >= my_rate) || is_market
@@ -557,22 +583,14 @@ fill_order = (my_trade, end_idx, status) ->
           rate = trade.rate 
         else 
           rate = my_rate 
-        maker = false
       else 
         rate = my_rate 
-        if trade.date - my_created > 60
-          maker = true 
-        else if trade.date - my_created + trade_lag < 10 
-          maker = false 
-        else 
-          maker = Math.random() < .5
 
       fill = 
         date: trade.date 
         rate: rate
         amount: trade.amount
-        maker: maker
-
+        maker: status.became_maker && !is_market 
 
       fills.push fill
 
@@ -587,7 +605,7 @@ fill_order = (my_trade, end_idx, status) ->
           to_fill -= fill.amount
 
 
-    if !is_market && trade.date > history.trades[end_idx].date + 30 * 60
+    if !is_market && (!history.trades[end_idx] || trade.date > history.trades[end_idx].date + 30 * 60)
       status.idx = idx 
       return status
 
@@ -630,6 +648,7 @@ store_analysis = ->
 
     for pos in positions
       row = dealer.analyze(pos, balance.maker_fee)
+      continue if !row
       independent = extend {}, row.independent, settings
       rows.push ( (if col of independent then independent[col] else row.dependent[col]) for col in cols)
 
@@ -814,7 +833,7 @@ lab = module.exports =
       c1: 'BTC'
       c2: 'ETH'
       accounting_currency: 'USDT'
-      trade_lag: 20
+      order_placement_lag: 1
       log: true
       enforce_balance: true
       persist: false
@@ -890,6 +909,7 @@ lab = module.exports =
       bus.sqlite_store
         filename: db_name
         use_transactions: true
+        backups: false
 
     global.save = bus.save 
     global.fetch = (key) ->
