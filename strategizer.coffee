@@ -226,59 +226,63 @@ series = module.exports =
 
 
   MACD: (v) -> 
-    dependencies: [[v.resolution, 'MACD',  {weight: v.weight}]]
+    dependencies: [[v.resolution, 'MACD_signal',  {weight: v.weight or 1}]
+                   [v.resolution * v.short, 'MACD_signal',  {weight: v.weight or 1}]]
 
     eval_whether_to_enter_new_position: (args) ->
       f = @features[v.resolution]
-      MACD = f.MACD {weight: v.weight}
+      MACD = f.MACD {weight: (v.weight or 1), short_resolution: v.resolution * v.short}
 
       pos = 
         buy: 
           rate: MACD
           entry: true 
-        series_data: "MACD-#{1/v.weight}-#{v.resolution}"
+        series_data: "MACD-#{v.weight or 1}-#{v.resolution}"
       pos
 
   MACD_signal: (v) -> 
-    dependencies: [[v.resolution, 'MACD_signal',  {weight: v.weight}]]
+    dependencies: [[v.resolution, 'MACD_signal',  {weight: v.weight or 1}]
+                   [v.resolution * v.short, 'MACD_signal',  {weight: v.weight or 1}]]
 
     eval_whether_to_enter_new_position: (args) ->
       f = @features[v.resolution]
-      MACD = f.MACD_signal {weight: v.weight}
+      MACD = f.MACD_signal {weight: (v.weight or 1), short_resolution: v.resolution * v.short}
 
       pos = 
         buy: 
           rate: MACD
           entry: true 
-        series_data: "signal-MACD-#{1/v.weight}-#{v.resolution}"
+        series_data: "signal-MACD-#{v.weight or 1}-#{v.resolution}"
       pos
 
   MACD_short: (v) -> 
-    dependencies: [[v.resolution, 'price',  {weight: v.weight}]]
+    resolution = v.resolution * v.short 
+
+    dependencies: [[resolution, 'price',  {weight: v.weight or 1}]]
 
     eval_whether_to_enter_new_position: (args) ->
-      f = @features[v.resolution]
-      p = f.price {weight: v.weight}
+      f = @features[resolution]
+      p = f.price {weight: v.weight or 1}
 
       pos = 
         buy: 
           rate: p
           entry: true 
-        series_data: "short-MACD-#{1/v.weight}-#{v.resolution}"
+        series_data: "short-MACD-#{v.weight or 1}-#{resolution}"
       pos
 
   MACD_long: (v) -> 
-    dependencies: [[v.resolution, 'price',  {weight: v.weight * 12/26}]]
+    dependencies: [[v.resolution, 'price',  {weight: v.weight or 1}]]
 
     eval_whether_to_enter_new_position: (args) ->
       f = @features[v.resolution]
-      p = f.price {weight: v.weight * 12/26}
+      p = f.price {weight: v.weight or 1}
 
       pos = 
         buy: 
           rate: p
           entry: true 
-        series_data: "long-MACD-#{1/v.weight}-#{v.resolution}"
+        series_data: "long-MACD-#{v.weight or 1}-#{v.resolution}"
       pos
 
 

@@ -37,8 +37,12 @@ feature_engine = module.exports =
 
             frames_needed = frame_calc(args)
 
-            console.assert !isNaN(frames_needed), 
-              message: "There was a problem calculating frames for #{name}. Check the #{feature}.frames definition."
+            if isNaN(frames_needed)
+              console.assert false, {
+                message: "There was a problem calculating frames for #{name}. Check the #{feature}.frames definition.",
+                frame_calc
+                args
+              }
             
             if frames_needed > engine.num_frames
               #console.log 'SETTING', engine.resolution, frames_needed, engine.num_frames
@@ -73,6 +77,7 @@ feature_engine = module.exports =
         return engine.enough_trades if engine.now == tick.time 
         engine.ticks++ 
 
+        resolution = @resolution
         trade_idx = engine.trade_idx = tick.trade_idx or 0
 
         # clear cache every once in awhile
@@ -176,13 +181,6 @@ feature_engine = module.exports =
         engine.enough_trades = enough_trades
 
         console.assert engine.enough_trades
-        # tot = 0
-        # for k,v of by_feature
-        #   tot += v 
-        # tot -= (t_.z or 0)
-        # #console.log by_feature
-        # console.log tot / 1000
-
         enough_trades
       
       frame: (i) ->
@@ -204,7 +202,7 @@ feature_engine = module.exports =
         boundary = engine.frame_boundaries[i]
         engine.trades[boundary[1]]
 
-      latest_trade: (i) -> 
+      latest_trade: -> 
         engine.trades[engine.trade_idx]
 
     
@@ -238,8 +236,9 @@ initialize_feature = (engine, name, func) ->
     t2 = args?.t2 or t
     weight = args?.weight or 1
     vel_weight = args?.vel_weight or ''
+    short_resolution = args?.short_resolution or ''
 
-    key = "#{right_now - t * resolution}-#{right_now - t2 * resolution}-#{weight}-#{vel_weight}"
+    key = "#{right_now - t * resolution}-#{right_now - t2 * resolution}-#{weight}-#{vel_weight}-#{short_resolution}"
 
     val = cache[key]
 
@@ -253,15 +252,17 @@ initialize_feature = (engine, name, func) ->
       len = e.num_frames
 
       if args.t > len - 1
-        flengths = (frame.length for frame in e.frames)
-        console.assert false, {message: "WHA!?", name: name, args: args, frames: len, flengths: flengths}
+        flengths = (frame.length for idx, frame of e.frames)
+        console.error false, {
+          message: "WHA!?"
+          resolution
+          name
+          args
+          frames: len
+          flengths
+        }
       else 
-        # zzz = Date.now()
         val = cache[key] = func e, args, all_engines
-        # dif = Date.now() - zzz
-        # by_feature[name] ?= 0
-        # by_feature[name] += dif
-        # t_.x -= dif
 
     if !(key of next_cache)
       next_cache[key] = val
@@ -271,14 +272,6 @@ initialize_feature = (engine, name, func) ->
 
   computer.past_result = (args, right_nowish) -> 
     e = engine
-    cache = e.cache[name]
-    next_cache = e.next_cache[name]
-    resolution = e.resolution
-
-    t = args?.t or 0
-    t2 = args?.t2 or t
-    weight = args?.weight or 1
-    vel_weight = args?.vel_weight or ''
 
     idx = e.ticked_at.length - 1
     while idx > 0 
@@ -296,7 +289,20 @@ initialize_feature = (engine, name, func) ->
       #   right_now: right_now
       return null
 
-    key = "#{right_now - t * resolution}-#{right_now - t2 * resolution}-#{weight}-#{vel_weight}"
+
+    cache = e.cache[name]
+    next_cache = e.next_cache[name]
+    resolution = e.resolution
+
+    t = args?.t or 0
+    t2 = args?.t2 or t
+    weight = args?.weight or 1
+    vel_weight = args?.vel_weight or ''    
+    short_resolution = args?.short_resolution or ''
+
+
+
+    key = "#{right_now - t * resolution}-#{right_now - t2 * resolution}-#{weight}-#{vel_weight}-#{short_resolution}"
 
     val = cache[key]
     if !val?

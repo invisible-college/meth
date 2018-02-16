@@ -86,7 +86,7 @@ f.price = (engine, args) ->
       while idx < fb[1]
         trade = history.trades[idx] 
         amount += trade.amount
-        total += trade.total 
+        total += trade.amount * trade.rate #trade.total # total from trade history can't be relied on b/c of rounding issue
         num++
         idx += 1
 
@@ -162,7 +162,7 @@ f.max_price = (engine, args) ->
 
   max
 
-f.min_price.frames = f.max_price.frames = (args) -> f.last_price.frames(args) + (args.t2 or args.t)
+f.min_price.frames = f.max_price.frames = (args) -> f.last_price.frames(args) + (args.t2 or args.t or 0)
 
 
 f.last_price = (engine, args) -> 
@@ -181,7 +181,7 @@ f.first_price = (engine, args) ->
   else 
     engine.last_price t: args.t + 1
 
-f.last_price.frames = f.first_price.frames = (args) -> args.t + 3
+f.last_price.frames = f.first_price.frames = (args) -> (args.t or 0) + 3
 
 
 f.price_stddev = (engine, args) -> 
@@ -475,33 +475,36 @@ f.RSI.frames = (args) ->
            
 
 
-f.MACD_signal = (engine, args) -> 
+f.MACD_signal = (engine, args, all_engines) -> 
 
   # MACD_line: (12-day EMA - 26-day EMA)
   # signal_line: 9-day EMA of MACD Line
   # calculated from MACD function: MACD_histogram = MACD Line - Signal Line
 
-  short_weight = args.weight
-  long_weight = args.weight * 12/26
-  MACD_weight = Math.min .9, args.weight * 12/9
+  long_resolution = engine 
+  short_resolution = all_engines[args.short_resolution]
 
-  day12_price = engine.price {t: args.t, weight: short_weight}
-  day26_price = engine.price {t: args.t, weight: long_weight}
+  weight = args.weight
+  MACD_weight = 1
+
+  day12_price = short_resolution.price {t: args.t, weight}
+  day26_price =  long_resolution.price {t: args.t, weight}
 
   MACD = day12_price - day26_price
 
   should_continue = MACD_weight != 1 && check_history_continuation(engine, args.t, MACD_weight)
   if should_continue
-    MACD = MACD_weight * MACD + (1 - MACD_weight) * engine.MACD_signal({t: args.t + 1, weight: MACD_weight})
+    MACD = MACD_weight * MACD + (1 - MACD_weight) * engine.MACD_signal({t: args.t + 1, weight: MACD_weight, short_resolution: args.short_resolution})
 
   MACD
 
-f.MACD = (engine, args) -> 
-  short_weight = args.weight
-  long_weight = args.weight * 12/26
+f.MACD = (engine, args, all_engines) -> 
+  long_resolution = engine 
+  short_resolution = all_engines[args.short_resolution]
+  weight = args.weight
 
-  day12_price = engine.price {t: args.t, weight: short_weight}
-  day26_price = engine.price {t: args.t, weight: long_weight}
+  day12_price = short_resolution.price {t: args.t, weight}
+  day26_price = long_resolution.price  {t: args.t, weight}
 
   MACD = day12_price - day26_price
   signal = engine.MACD_signal args 
@@ -509,9 +512,9 @@ f.MACD = (engine, args) ->
   MACD - signal 
 
 f.MACD.frames = f.MACD_signal.frames = (args) -> 
-  weight = args.weight * 12/26
-  MACD_weight = Math.min .9, args.weight * 12/9
-  t = (args.t or 0)
+  weight = args.weight
+  MACD_weight = 1 #Math.min .9, args.weight * 12/9
+  t = args.t or 0
 
   frames = f.price.frames
     t: t + frames_for_weight(MACD_weight) + 1
