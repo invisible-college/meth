@@ -196,6 +196,8 @@ module.exports =
           v *= 100
         name += "&#{k}=#{v}"
       else
+        if v.constructor == Array || v.constructor == Object
+          v = JSON.stringify(v)
         name += "&#{k}=#{v}"
     name 
 

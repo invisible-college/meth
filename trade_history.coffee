@@ -60,6 +60,7 @@ module.exports = history =
           else 
 
             i = 0 
+            cnt = 0 
             while true
               c1_date = price_data.c1[i]?.date
               c2_date = price_data.c2[i]?.date 
@@ -82,19 +83,29 @@ module.exports = history =
               if !patch_needed            
                 i += 1
 
-            console.assert equal_lengths(), msg: "patching failed", price_data: price_data
+              break if cnt > price_data.c1.length + price_data.c2.length + price_data.c1xc2.length # there is a bug where infinite loop possible
+              cnt += 1
+
+            console.error equal_lengths(), msg: "patching failed", price_data: price_data
 
       # second we'll look to see if the candles are equally spaced by the desired granularity
       for pair, data of price_data when pair != 'key' && pair != 'granularity'
-        for candle, idx in data when idx > 0
+        for candle, idx in data 
+          continue if idx == 0
+
+          console.assert candle.date != data[idx - 1].date, {
+            idx, cur: candle, prev: data[idx-1], cur2: data[idx]
+          }
+          
+
           if candle.date != data[idx - 1].date + granularity 
             console.log "#{pair} has a missing candle at #{idx}"
             if config.disable_price_patching
               console.log "retrying"
               setTimeout load_history, 1000
               return
-            else 
-              patch idx, pair 
+            # else 
+            #   patch idx, pair 
 
       callback()
 
@@ -203,46 +214,55 @@ module.exports = history =
     if !fs.existsSync("trade_history/#{config.exchange}/#{config.c1}_#{config.c2}")  
       fs.mkdirSync "trade_history/#{config.exchange}/#{config.c1}_#{config.c2}"  
 
-    load_hours = => 
-      first_hour = Math.floor start / 60 / 60
-      last_hour = Math.ceil end / 60 / 60
+    first_hour = Math.floor start / 60 / 60
+    last_hour = Math.ceil end / 60 / 60
 
-      if config.log
-        bar = new progress_bar '  loading history [:bar] :percent :etas :elapsed',
-          complete: '='
-          incomplete: ' '
-          width: 40
-          total: last_hour - first_hour 
+    if config.log
+      bar = new progress_bar '  loading history [:bar] :percent :etas :elapsed',
+        complete: '='
+        incomplete: ' '
+        width: 40
+        total: last_hour - first_hour 
 
-      to_run = []
-      for hour in [first_hour..last_hour]
-        func = @load_hour hour, end
-        if func && !config.history_loaded
-          to_run.push func 
-        else 
-          bar.tick() if config.log
-
-
-      is_done = =>
+    to_run = []
+    for hour in [first_hour..last_hour]
+      func = @load_hour hour, end
+      if func && !config.history_loaded
+        to_run.push func 
+      else 
         bar.tick() if config.log
-        if to_run.length == 0
 
-          @trades.sort (a,b) -> b.date - a.date
 
-          console.log "Done loading history! #{@trades.length} trades." if config.log
-          complete()
+    is_done = =>
+      bar.tick() if config.log
+      if to_run.length == 0
 
-        else 
-          setImmediate ->
-            f = to_run.pop()
-            f is_done 
+        @trades.sort (a,b) -> b.date - a.date
+        console.log "Done loading history! #{@trades.length} trades." if config.log
 
-      is_done()
+        # duplicate detection
+        if false 
+          p = null 
+          for t in @trades 
+            if p && p.date == t.date && p.rate == t.rate && t.amount == p.amount && t.total == p.total && t.tradeID == p.tradeID
+              console.log "DUPLICATES: ", p, t 
+            p = t
 
-    if !config.offline
-      exchange.download_all_trade_history {c1: config.c1, c2: config.c2, stop_when_cached: true}, load_hours
-    else 
-      load_hours()
+        if false # save all trades onto statebus for visualization. usually too big!
+          x = 
+            key: 'all_trades'
+            trades: @trades
+          bus.save x
+
+
+        complete()
+
+      else 
+        setImmediate ->
+          f = to_run.pop()
+          f is_done 
+
+    is_done()
 
   set_longest_requested_history: (max_length) -> 
     # at least 10 minute frames, otherwise 
@@ -277,44 +297,44 @@ module.exports = history =
     , callback
 
 
+  load_from_file: (fname, hour, end) -> 
+    from_file = fs.readFileSync(fname, 'utf8')
+    trades = JSON.parse from_file
+
+    for trade in trades when trade.date <= end
+      @trades.push trade
+
   load_hour: (hour, end) -> 
     fname = "trade_history/#{config.exchange}/#{config.c1}_#{config.c2}/#{hour}"
 
     if fs.existsSync fname
-
-      from_file = fs.readFileSync(fname, 'utf8')
-      trades = JSON.parse from_file
-
-      for trade in trades when trade.date <= end
-        @trades.push trade
-
-      # console.log "...loaded hour #{hour} via file"
+      @load_from_file fname, hour, end 
       return null 
-
     else
       if !config.offline
         f = (complete) => 
-
-          exchange.get_trade_history
-            c1: config.c1
-            c2: config.c2
-            start: hour * 60 * 60
-            end: (hour + 1) * 60 * 60 - 1
-          , (trades) => 
-
-            console.assert trades, {message: "ABORT: #{config.exchange} returned empty trade history"}
-
-            for trade in trades 
-              @process_new_trade trade 
-
-            if hour + 1 <= now() / 60 / 60 && !fs.existsSync(fname) # && trades.length > 0
-              fs.writeFileSync fname, JSON.stringify(trades), 'utf8'
-
-            #console.log "...loaded hour #{hour} with #{trades.length} trades from #{config.exchange}. Saved to #{fname}"
+          if fs.existsSync fname 
+            @load_from_file fname, hour, end 
             complete()
+          else 
+            exchange.get_trade_history
+              c1: config.c1
+              c2: config.c2
+              start: hour * 60 * 60
+              end: (hour + 1) * 60 * 60 - 1
+            , (trades) => 
+
+              console.assert trades, {message: "ABORT: #{config.exchange} returned empty trade history"}
+
+              for trade in trades 
+                @process_new_trade trade 
+
+              if hour + 1 <= now() / 60 / 60 && !fs.existsSync(fname) # && trades.length > 0
+                fs.writeFileSync fname, JSON.stringify(trades), 'utf8'
+
+              #console.log "...loaded hour #{hour} with #{trades.length} trades from #{config.exchange}. Saved to #{fname}"
+              complete()
         return f
-      else 
-        return null 
       
 
 
