@@ -138,13 +138,17 @@ compute_KPI = (dealer_or_dealers, name) ->
 
   series = 
     profit_index: []
-    profit_index_normalized: []
-    # difference: []          
+    unit_profits: []
+    fees: [] 
+    volume: [] 
+    fee_rate: []    
+    c1_fees: []
+    c2_fees: [] 
     trade_profit: []
     trade_profit_difference: []
     ratio_compared_to_deposit: []
     returns: []
-    returns_to_date: []
+
     open: []
     start: dates[0] / 1000
     end: dates[dates.length - 1] / 1000
@@ -175,29 +179,38 @@ compute_KPI = (dealer_or_dealers, name) ->
 
 
     # trade-level metrics
+    c2_fees = c1_fees = volume = 0 
     while true 
 
       break if fills.length == 0 || fills[fills.length - 1].date > period / 1000 + period_length
 
       fill = fills.pop()
       xfee = if fill.maker then maker_fee else taker_fee
+      volume += fill.amount 
+
       # console.log 'TRADE AMOUNT', trade.amount, trade.type
       if fill.type == 'buy'
         cur_balance.c1 -= fill.total
         cur_balance.c2 += fill.amount
 
         if config.exchange == 'poloniex'
-          cur_balance.c2 -= fill.amount * xfee
+          fee = fill.fee or fill.amount * xfee
+          c2_fees += fee
+          cur_balance.c2 -= fee
         else 
-          cur_balance.c1 -= fill.total * xfee
+          fee = fill.fee or fill.total * xfee
+          c1_fees += fee
+          cur_balance.c1 -= fee
 
       else 
         cur_balance.c1 += fill.total
         cur_balance.c2 -= fill.amount
-        cur_balance.c1 -= fill.total * xfee 
+        fee = fill.fee or fill.total * xfee 
+        c1_fees += fee
+        cur_balance.c1 -= fee
 
 
-    if cur_balance.c2 < 0 || cur_balance.c1 < 0 
+    if (cur_balance.c2 < 0 || cur_balance.c1 < 0) && config.simulation 
       console.error 'negative balance!', cur_balance, name
       console.log config.c1, config.c2 #, fill, 
       process.exit()
@@ -235,9 +248,23 @@ compute_KPI = (dealer_or_dealers, name) ->
     profit = $c2 * cur_balance.c2 + $c1 * cur_balance.c1 - baseline_adjustment
     series.profit_index.push [period / 1000, profit]
 
-    series.profit_index_normalized.push [period / 1000, profit / BTC_2_ETH]
+    baseline_adjustment = baseline.c2 + baseline.c1 / BTC_2_ETH
+    unit_profits = cur_balance.c2 + cur_balance.c1 / BTC_2_ETH - baseline_adjustment
+    series.unit_profits.push [period / 1000, unit_profits]
 
+    prev_volume = if idx == 0 then 0 else series.volume[idx - 1][1]
+    series.volume.push [period / 1000, volume + prev_volume]
 
+    previous_c1 = if idx == 0 then 0 else series.c1_fees[idx - 1][1]
+    previous_c2 = if idx == 0 then 0 else series.c2_fees[idx - 1][1]
+    fees = (c2_fees + previous_c2) + (c1_fees + previous_c1) / BTC_2_ETH
+
+    series.fees.push [period / 1000, fees]
+    series.c1_fees.push [period / 1000, c1_fees + previous_c1]
+    series.c2_fees.push [period / 1000, c2_fees + previous_c2]
+
+    series.fee_rate.push [period / 1000, series.fees[series.fees.length - 1][1] / series.volume[series.volume.length - 1][1]]
+    
     # difference = if idx == 0 then 0 else profit - series.profit_index[idx - 1][1]
     # series.difference.push [period / 1000, difference]
 
@@ -249,10 +276,11 @@ compute_KPI = (dealer_or_dealers, name) ->
     # series.returns.push [period / 1000,ret]
 
     baseline_val_in_ETH = baseline.c2 + baseline.c1 / BTC_2_ETH 
+
     ret = trade_profit_difference / baseline_val_in_ETH
-    returns_to_date = profits_from_trades / baseline_val_in_ETH
-    series.returns.push     [period / 1000, 100 * ret ]
-    series.returns_to_date.push [period / 1000, 100 * returns_to_date ]
+    series.returns.push         [period / 1000, 100 * ret ]
+
+    
 
 
     original_ratio = baseline.c2 / (baseline.c1 + baseline.c2)
@@ -320,9 +348,6 @@ KPI = (callback) ->
 
     for dealer in dealers when dealer not in series_data
       stats = compute_KPI dealer
-      console.log dealer
-      if dealer == 'all'
-        console.log 'all', stats
       all_stats[dealer] = stats
 
   catch error 
@@ -451,24 +476,18 @@ indicators =
     if returns.length == 0 
       return 0 
 
-    granularity = from_cache('price_data').granularity
-
-    if granularity != 86400
-      console.log 'Sortino is incorrectly calculated here because it assumes daily returns'
-
-    periods_per_year = 365
+    granularity = from_cache('/price_data').granularity
+    periods_per_year = 365 * 24 * 60 * 60 / granularity
 
     yearly_return_target = 0.01 # 1% minimum yearly return goal. Treats not trading as slight negative.
-    target_return = 100 * (Math.pow(1 + yearly_return_target, 1/365) - 1) # convert to daily return. Treats not trading as slight negative.
+    target_return = 100 * (Math.pow(1 + yearly_return_target, 1 / periods_per_year) - 1) # convert to per period return. Treats not trading as slight negative.
     avg_return = Math.average returns
 
     neg_diff = ( Math.pow(Math.min(0, (r - target_return)),2) for r in returns )
-    target_downside_dev = Math.sqrt(Math.average(neg_diff))
+    downside_dev = Math.sqrt(Math.average(neg_diff))
     
-    # target_downside_dev = Math.max(.01, target_downside_dev)
-
-    sortino = (avg_return - target_return) / target_downside_dev
-    sortino *= Math.sqrt(365) # annualize, assuming 1 day periods
+    sortino = (avg_return - target_return) / downside_dev
+    sortino *= Math.sqrt(periods_per_year) # annualize
     
     indicator_cache.sortino[s] = sortino
     sortino
@@ -482,13 +501,13 @@ indicators =
     indicator_cache.profit[s] = prof
     prof
 
-  profit_normalized: (s, stats) -> 
-    indicator_cache.profit_normalized ||= {}
-    return indicator_cache.profit_normalized[s] if s of indicator_cache.profit_normalized 
+  unit_profits: (s, stats) -> 
+    indicator_cache.unit_profits ||= {}
+    return indicator_cache.unit_profits[s] if s of indicator_cache.unit_profits 
 
-    profs = Math.quartiles (v[1] for v in stats[s].metrics.profit_index_normalized)
+    profs = Math.quartiles (v[1] for v in stats[s].metrics.unit_profits)
     prof = (profs.q1 + profs.q2 + profs.q3) / 3 or 0 
-    indicator_cache.profit_normalized[s] = prof
+    indicator_cache.unit_profits[s] = prof
     prof
 
   trade_profit:  (s, stats) -> 
@@ -501,6 +520,18 @@ indicators =
     else 
       prof = 0 
     indicator_cache.trade_profit[s] = prof 
+    prof
+
+  fees:  (s, stats) -> 
+    indicator_cache.fees ||= {}
+    return indicator_cache.fees[s] if s of indicator_cache.fees 
+
+    nonzero = (v[1] for v in stats[s].metrics.fees when v[1] != 0 )
+    if nonzero.length > 0
+      prof = Math.average nonzero
+    else 
+      prof = 0 
+    indicator_cache.fees[s] = prof 
     prof
 
   open: (s, stats) -> 
@@ -648,6 +679,7 @@ indicators.completed.additive = true
 indicators.power.additive = true 
 indicators.trade_profit.additive = true 
 indicators.open.additive = true 
+indicators.fees.additive = true
 
 
 crunch = module.exports = 

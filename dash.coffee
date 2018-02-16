@@ -107,6 +107,12 @@ dom.BODY = ->
           show_by_default: false
           render: -> ACTIVITY key: 'table'
 
+        SECTION 
+          key: 'misc_analysis'
+          name: "Misc. Analysis"
+          show_by_default: false 
+          render: -> PRICE_TRAJECTORY_OF_OPEN_POSITIONS()
+
 dom.BODY.refresh = ->
 
 
@@ -348,6 +354,9 @@ feature_settings =
   '/price-dealer':
     name: 'Price' 
 
+  '/last_price-dealer':
+    name: 'Last Price' 
+
   '/USD_volume-dealer':
     name: 'USD volume traded'
     tickformat: "+$,.0f"
@@ -364,9 +373,8 @@ plot_settings =
 
   unit_profits: 
     name: 'Unit Profit & Losses'
-    metric: 'profit_index_normalized'
-    tickformat: "+$,.0f"
-
+    metric: 'unit_profits'
+    tickformat: "+,.4f"
 
   ratio: 
     name: 'Pair Ratio'
@@ -376,7 +384,22 @@ plot_settings =
   trade_profit: 
     name: 'Position Profit'
     metric: 'trade_profit'
-    tickformat: ',.2f'
+    tickformat: ',.4f'
+
+  fees: 
+    name: 'Fees'
+    metric: 'fees'
+    tickformat: ',.4f'
+
+  volume: 
+    name: 'Volume'
+    metric: 'volume'
+    tickformat: ',.4f'
+
+  fee_rate: 
+    name: 'Fee rate'
+    metric: 'fee_rate'
+    tickformat: ',.2%'
 
   returns: 
     name: 'Return %'
@@ -516,7 +539,7 @@ dom.TIME_SERIES.refresh = ->
   price_data = fetch '/price_data'  
   balances = fetch '/balances'
   all_stats = fetch 'stats'
-
+  all_trades = fetch('/all_trades').trades
 
   return if @local.initialized || Object.keys(price_data).length == 1 || \
             dealers_in_focus().length == 0 || \
@@ -617,25 +640,14 @@ dom.TIME_SERIES.refresh = ->
       y: series_dat
       mode: 'markers'
       yaxis: anchor
-      hoverinfo: "y+name"
+      xaxis: 'x'
+      # hoverinfo: "y+name"
       hoverformat: feature_settings[feature]?.tickformat
       line: 
         width: 1
       marker:         
-        size: 1
-        
-    if series_dat[0]?.exit 
-      data.push 
-        name: feature + 'low'
-        type: 'scattergl'
-        x: dates
-        y: (p.exit.rate for p in pnts)
-        yaxis: anchor
-        hoverinfo: "y+name"
-        hoverformat: feature_settings[feature]?.tickformat
-        line: 
-          width: 1
-
+        size: 4
+    
 
     layout[axdef] = 
       tickformat: feature_settings[feature]?.tickformat or ',.4r'
@@ -655,6 +667,39 @@ dom.TIME_SERIES.refresh = ->
 
 
 
+  if all_trades?.length > 0 
+    
+    dates = (p.date * 1000 for p in all_trades)
+    series_dat = (p.rate for p in all_trades)
+
+    
+    if (axis_map['/last_price-dealer'] or axis_map['/price-dealer'])
+      axdef = (axis_map['/last_price-dealer'] or axis_map['/price-dealer']).axdef 
+      anchor = (axis_map['/last_price-dealer'] or axis_map['/price-dealer']).anchor
+    else    
+      console.assert false
+
+    axis_map[feature] = {axdef, anchor}
+
+    data.push 
+      name: 'all trades'
+      type: 'scattergl'
+      x: dates
+      y: series_dat
+      mode: 'markers'
+      yaxis: anchor
+      xaxis: 'x'
+      # hoverinfo: "y+name"
+      # hoverformat: feature_settings[feature]?.tickformat
+      line: 
+        width: 1
+      marker:         
+        size: 1
+
+
+
+
+
 
   for plot in plots
     series_settings = plot_settings[plot]
@@ -662,9 +707,11 @@ dom.TIME_SERIES.refresh = ->
     if axis_counter == 1 
       axdef = 'yaxis'
       anchor = null
-    else if plot == 'trades' && axis_map['/price-dealer']
-      axdef = axis_map['/price-dealer'].axdef 
-      anchor = axis_map['/price-dealer'].anchor
+    else if plot == 'trades' && (axis_map['/last_price-dealer'] or axis_map['/price-dealer'])
+      
+      axdef = (axis_map['/last_price-dealer'] or axis_map['/price-dealer']).axdef 
+      anchor = (axis_map['/last_price-dealer'] or axis_map['/price-dealer']).anchor
+
     else 
       axdef = "yaxis#{axis_counter}"
       anchor = "y#{axis_counter}"
@@ -710,30 +757,46 @@ dom.TIME_SERIES.refresh = ->
         buy: []
         sell: []
 
+      plot_fills = false
       for dealer in dealers_in_focus()
         for p in cached_positions[dealer]
           for trade in [p.entry, p.exit] when trade
-            x.push 1000 * (trade.closed or trade.created)
-            y.push trade.rate 
-            if trade.type == 'sell'
-              colors.push 0
-            else 
-              colors.push 1
+            if plot_fills && trade.fills?.length > 0 
+              for fill in trade.fills 
+                x.push 1000 * fill.date
+                y.push fill.rate 
+                if trade.type == 'sell'
+                  colors.push 0
+                else 
+                  colors.push 1
 
-            if p.closed
-              size.push 8
-              opacities.push .5
-              borderwidths.push 0
-            else 
-              opacities.push .9                
-              size.push 12
-              if !trade.closed
-                borderwidths.push 1
-              else 
+                size.push 8
+                opacities.push fill.amount / trade.amount
+
                 borderwidths.push 0
 
+            else if !plot_fills
+              x.push 1000 * (trade.closed or trade.created)
+              y.push trade.rate 
+              if trade.type == 'sell'
+                colors.push 0
+              else 
+                colors.push 1
 
-          if p.entry && p.exit 
+              if p.closed
+                size.push 8
+                opacities.push .5
+                borderwidths.push 0
+              else 
+                opacities.push .9                
+                size.push 12
+                if !trade.closed
+                  borderwidths.push 1
+                else 
+                  borderwidths.push 0
+
+
+          if p.entry && p.exit && !plot_fills 
             if Math.abs((p.entry.closed or p.entry.created) - (p.exit.closed or p.exit.created)) > 5 * 60
               linesx[p.entry.type].push 1000 * (p.entry.closed or p.entry.created)
               linesy[p.entry.type].push p.entry.rate 
@@ -750,8 +813,9 @@ dom.TIME_SERIES.refresh = ->
         x: x
         y: y
         yaxis: anchor
+        xaxis: 'x'
         showlegend: false
-        hoverinfo: 'skip'
+        # hoverinfo: 'skip'
         marker:         
           size: size
           color: colors
@@ -768,6 +832,7 @@ dom.TIME_SERIES.refresh = ->
         x: linesx.buy
         y: linesy.buy
         yaxis: anchor
+        xaxis: 'x'
         showlegend: false
         hoverinfo: 'skip'
         opacity: .3
@@ -782,6 +847,7 @@ dom.TIME_SERIES.refresh = ->
         x: linesx.sell
         y: linesy.sell
         yaxis: anchor
+        xaxis: 'x'
         showlegend: false
         hoverinfo: 'skip'
         opacity: .3
@@ -804,6 +870,7 @@ dom.TIME_SERIES.refresh = ->
           x: KPI.dates
           y: series_settings.y?(series) or (p[1] for p in series)
           yaxis: anchor
+          xaxis: 'x'
           showlegend: false
           hoverinfo: "y+name"
           hoverlabel: 
@@ -874,7 +941,7 @@ dom.TIME_SERIES.refresh = ->
           }]
 
       rangeslider:  {}
-      type: 'date'
+      #type: 'date'
 
   try 
     Plotly.purge(@refs.plotly.getDOMNode())
@@ -1500,6 +1567,9 @@ dom.SELECT_PARAMS = ->
 
       ['Score*',    (p) -> format p, false, false,  (s) -> indicators.score(s, stats)]
       ['Profit*',   (p) -> format p, false, true,  (s) -> indicators.profit(s,stats)]   
+
+      ['Fees',   (p) -> format p, true, true,  (s) -> indicators.fees(s,stats)]   
+
       # ['hTradeProf',(p) -> format p, false, (s) -> indicators.trade_profit(s,stats)]   
 
       # ['hOpen',     (p) -> format p, true,  (s) -> indicators.open(s, stats)]      
@@ -1717,7 +1787,7 @@ dom.ACTIVITY = ->
             "#{pos.exit.type} #{pos.exit.amount.toFixed(3)} #{if pos.exit.to_fill > 0 && pos.exit.fills.length > 0 then (pos.exit.amount - pos.exit.to_fill).toFixed(3) else ''} @ #{pos.exit.rate.toFixed(5)}"
       ]
       ['Earnings', (pos) -> 
-        if pos.exit then "#{(pos.profit or pos.expected_profit)?.toFixed(3)} (#{(100 * (pos.profit or pos.expected_profit) / pos.exit.amount )?.toFixed(2)}%)" else '?']
+        if pos.exit then "#{(pos.profit or pos.expected_profit)?.toFixed(3)} (#{(100 * (pos.profit or pos.expected_profit) / ((pos.exit.amount + pos.entry.amount) / 2 ) )?.toFixed(2)}%)" else '?']
 
     ]
 
@@ -2268,3 +2338,269 @@ hsv2rgba = (h,s,v,a) ->
   [r, g, b] = [v, p, q] if h_i==5
 
   "rgba(#{Math.round(r*256)}, #{Math.round(g*256)}, #{Math.round(b*256)}, #{a})"
+
+
+
+
+
+
+
+# custom analysis...
+
+dom.PRICE_TRAJECTORY_OF_OPEN_POSITIONS = -> 
+
+  DIV 
+    style: 
+      position: 'relative'
+
+    DIV
+      id: "price-trajectory"
+      ref: 'plotly'
+      style: 
+        position: 'relative'
+
+
+dom.PRICE_TRAJECTORY_OF_OPEN_POSITIONS.refresh = ->
+  all_stats = fetch 'stats'
+
+
+  return if @local.initialized || dealers_in_focus().length == 0 || Object.keys(all_stats).length == 1
+
+  @local.initialized = true 
+
+  data = []
+
+
+  dates = undefined
+
+
+  all_plus = []
+  all_neg = []
+  mixed = []
+
+  for dealer in dealers_in_focus()
+
+    positions = (p for p in (cached_positions[dealer] or []) when p.closed && p.prices_observed)
+
+    continue if !positions[0]?.entry?.closed
+
+    for pos in positions
+      anchor   = pos.prices_observed[0][1]
+      earliest = pos.prices_observed[0][0] 
+
+      if pos.entry.type == 'sell'
+        series_dat = ( 100 * (anchor - p[1]) / anchor  for p in pos.prices_observed)
+      else 
+        series_dat = ( 100 * (p[1] - anchor) / anchor  for p in pos.prices_observed)
+
+      if pos.entry.type == 'sell'
+        first_hour = ( 100 * (anchor - p[1]) / anchor  for p in pos.prices_observed when p[0] - earliest < 60 * 60)
+      else 
+        first_hour = ( 100 * (p[1] - anchor) / anchor  for p in pos.prices_observed when p[0] - earliest < 60 * 60)
+
+      has_pos = false 
+      has_neg = false 
+      for p in first_hour
+        if p < 0 
+          has_neg = true 
+        if p > 0 
+          has_pos = true 
+
+        break if has_pos && has_neg
+
+
+      if has_neg && has_pos 
+        mixed.push [Math.average(first_hour), Math.average(series_dat), series_dat[series_dat.length - 1]] 
+      else if has_neg 
+        all_neg.push [Math.average(first_hour), Math.average(series_dat), series_dat[series_dat.length - 1]] 
+      else 
+        all_plus.push [Math.average(first_hour), Math.average(series_dat), series_dat[series_dat.length - 1]] 
+
+  console.log 'ALL PLUS:', {num: all_plus.length, first_hour: Math.average((a[0] for a in all_plus)), overall: Math.average((a[1] for a in all_plus)), last: Math.average((a[2] for a in all_plus))}
+  console.log 'ALL NEG: ', {num: all_neg.length,  first_hour: Math.average((a[0] for a in all_neg)), overall: Math.average((a[1] for a in all_neg)), last: Math.average((a[2] for a in all_neg))}
+  console.log 'MIXED:   ', {num: mixed.length,    first_hour: Math.average((a[0] for a in mixed)), overall: Math.average((a[1] for a in mixed)), last: Math.average((a[2] for a in mixed))}
+
+
+
+  console.log "after a position hits -x%, what is the average outcome? the last outcome?"
+  for x in [20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1, 0.5, 0.1, -0.1, -0.5, -1.0, -2.0, -3.0, -4.0, -5.0, -6.0, -7.0, -8,-9,-10,-11,-12,-13,-14,-15,-16,-17,-18]
+
+    examples = []
+    all = []
+    for dealer in dealers_in_focus()
+
+      positions = (p for p in (cached_positions[dealer] or []) when p.closed && p.prices_observed)
+
+      continue if !positions[0]?.entry?.closed
+
+      for pos in positions
+
+        reached_at = null 
+
+        for o,idx in pos.prices_observed
+          observed = 100 * o[2]
+          if ( x < 0 && observed <= x) || \
+             ( x > 0 && observed >= x) 
+            reached_at = idx
+            break
+
+        continue if !reached_at
+
+        exited = Infinity
+        for k,t of (pos.prog_exits or {})
+          exited = t
+
+        remaining = (o[2] for o in pos.prices_observed.slice(reached_at) when o[0] <= exited )
+        continue if remaining.length == 0 
+
+        last = remaining[remaining.length - 1]
+        best = Math.max.apply null, remaining
+
+        all = all.concat remaining
+
+        examples.push {last, best, reached_at}
+
+    
+    console.log "#{x}%", examples.length, {
+      last_avg: 100 * Math.average( (e.last for e in examples ) ), 
+      best_avg: 100 * Math.average( (e.best for e in examples ) ), 
+      remaining_avg: 100 * Math.average( all ), 
+      last_median: 100 * Math.median( (e.last for e in examples ) ), 
+      best_median: 100 * Math.median( (e.best for e in examples ) ), 
+      remaining_median: 100 * Math.median( all )
+    }
+
+
+
+
+  console.log "Given that a price X was reached, what is the average exit if it rebounds to Y?"
+  X = Y = [20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0.5,0.1,-0.1,-0.5, -1.0, -2.0, -3.0, -4.0, -5.0, -6.0, -7.0, -8,-9,-10,-11,-12,-13,-14,-15,-16,-17,-18]
+  for x in X when x < 0
+
+    rebounds = {}
+    
+    for dealer in dealers_in_focus()
+
+      positions = (p for p in (cached_positions[dealer] or []) when p.closed && p.prices_observed)
+
+      continue if !positions[0]?.entry?.closed
+
+      for pos in positions
+
+        reached_at = null 
+
+        for o,idx in pos.prices_observed
+          observed = 100 * o[2]
+          if ( x < 0 && observed <= x) || \
+             ( x > 0 && observed >= x) 
+            reached_at = idx
+            break
+
+        continue if !reached_at
+
+        exited = Infinity
+        for k,t of (pos.prog_exits or {})
+          exited = t
+
+        remaining = (o[2] for o in pos.prices_observed.slice(reached_at) when o[0] <= exited )
+        continue if remaining.length == 0 
+
+        best = Math.max.apply null, remaining
+        last = remaining[remaining.length - 1]
+
+        for y in Y when y < 0 && y >= x
+          if 100 * best >= y
+            rebounds[y] ?= []
+            rebounds[y].push last  
+          
+    
+    console.log "#{x}%"
+    for y in Y when rebounds[y]
+      if rebounds[y].length > 0 
+        v = 100 * Math.average(rebounds[y])
+        console.log '\t', "#{y}%, #{(v).toFixed(2)}%, #{rebounds[y].length}, #{((y - v) * rebounds[y].length).toFixed(2)}"
+      else 
+        console.log '\t0.00%, 0'
+
+
+
+
+
+
+  return DIV null
+
+
+
+
+  for dealer in dealers_in_focus()
+
+    positions = (p for p in (cached_positions[dealer] or []) when p.closed && p.prices_observed)
+
+    continue if !positions[0]?.entry?.closed
+
+    for pos in positions
+      earliest = pos.prices_observed[0][0] 
+      anchor = pos.prices_observed[0][1]
+
+      if pos.entry.type == 'sell'
+        series_dat = ( 100 * (anchor - p[1]) / anchor  for p in pos.prices_observed)
+      else 
+        series_dat = ( 100 * (p[1] - anchor) / anchor  for p in pos.prices_observed)
+
+
+
+      dates = ( (p[0] - earliest) * 1000 for p in pos.prices_observed)
+
+
+      data.push 
+        name: pos.key
+        type: 'scattergl'
+        x: dates
+        y: series_dat
+        mode: 'lines'
+        hoverinfo: "y+name"
+        # hoverformat: feature_settings[feature]?.tickformat
+        line: 
+          width: 1
+        marker:         
+          size: 1
+
+
+  layout =
+    dragmode: 'zoom'
+    margin:
+      r: 10
+      t: 25
+      b: 40
+      l: 60
+      pad: 0
+    showlegend: false #data.length < 25
+
+    height: 700
+    paper_bgcolor: 'rgba(0,0,0,0)'
+    plot_bgcolor: 'rgba(0,0,0,0)'
+    font:
+      family: mono
+      size: 12
+      color: '#888'
+    yaxis: 
+      # type: 'log'
+      gridcolor: '#333'
+
+    xaxis: 
+      gridcolor: '#333'
+      showgrid: false
+      zeroline: true
+      rangeslider:  {}
+      #type: 'date'
+      #type: 'log'
+
+  try 
+    Plotly.purge(@refs.plotly.getDOMNode())
+  catch e 
+    console.log "Couldn't delete plotly trace before plotting"
+
+  Plotly.plot(@refs.plotly.getDOMNode(), data, layout)
+
+
+
