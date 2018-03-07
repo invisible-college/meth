@@ -106,7 +106,7 @@ feature_engine = module.exports =
         return false if !trades[trade_idx]
 
         if config.simulation && tick.time < trades[trade_idx].date 
-          console.assert false, 
+          log_error true,
             message: 'Future trades pumped into feature engine'
             trade: trades[trade_idx] 
             time: tick.time
@@ -122,11 +122,13 @@ feature_engine = module.exports =
             if a < 0 
               a = 0 
 
-          console.assert trades[a]?, 
-            a: a 
-            b: b 
-            frame_boundaries: frame_boundaries
-            num_trades: num_trades
+          if !(trades[a]?)
+            log_error true,
+              message: 'No trade history entry for #{a}'
+              a: a 
+              b: b 
+              frame_boundaries: frame_boundaries
+              num_trades: num_trades
 
           b = a + last_frame_w
           fr_a = ((tick_time - trades[a].date) / resolution) | 0  # faster Math.floor
@@ -180,7 +182,9 @@ feature_engine = module.exports =
         engine.frames = {}
         engine.enough_trades = enough_trades
 
-        console.assert engine.enough_trades
+        if !engine.enough_trades 
+          log_error true, {message: "not enough trades"}
+
         enough_trades
       
       frame: (i) ->

@@ -96,13 +96,25 @@ simulate = (ts, callback) ->
     settings = from_cache(dealer).settings
 
     budget = settings.$budget or $budget_per_strategy
+
+    if config.deposit_allocation == '50/50'
+      c1_budget = budget * (1 - (settings.ratio or .5) ) / $c1
+      c2_budget = budget * (settings.ratio or .5) / $c2
+    else if config.deposit_allocation == 'c1'
+      c1_budget = budget * .95 / $c1
+      c2_budget = budget * .05 / $c2
+    else if config.deposit_allocation == 'c2'
+      c1_budget = budget * .05 / $c1
+      c2_budget = budget * .95 / $c2
+
+
     balance[dealer] = 
       balances:
-        c2: budget * (settings.ratio or .5) / $c2
-        c1: budget * (1 - (settings.ratio or .5) ) / $c1
+        c2: c2_budget
+        c1: c1_budget
       deposits: 
-        c2: budget * (settings.ratio or .5) / $c2
-        c1: budget * (1 - (settings.ratio or .5) ) / $c1        
+        c2: c2_budget
+        c1: c1_budget        
       accounted_for: 
         c1: 0
         c2: 0
@@ -417,7 +429,7 @@ update_position_status = (end_idx, balance, dealers_with_open) ->
           status = global.position_status[key] = fill_order trade, end_idx, status
           # console.log '\nFILLLLLLLL\n', key, end_idx, status?.idx, status?.fills?.length
 
-        if status?.fills?.length > 0 && !trade.force_canceled
+        if status?.fills?.length > 0 
           filled = 0 
 
           for fill in (status.fills or [])
@@ -456,7 +468,7 @@ update_position_status = (end_idx, balance, dealers_with_open) ->
             fills: trade.fills
 
         if trade.to_fill == 0
-          trade.closed = if trade.force_canceled then tick.time else trade.fills[trade.fills.length - 1].date
+          trade.closed = trade.fills[trade.fills.length - 1].date
           if trade.fill_to?
             delete trade.fill_to
           global.position_status[key] = undefined
@@ -788,7 +800,7 @@ lab = module.exports =
         runs.push 
           end: end
           simulation_width: length
-          name: "l#{((now() - end) / (7 * 24 * 60 * 60)).toFixed(0)} weeks ago #{conf.exchange} #{conf.c1}x#{conf.c2}"
+          name: "l#{((now() - end) / (7 * 24 * 60 * 60)).toFixed(0)} weeks ago #{conf.exchange} #{conf.c1}x#{conf.c2} #{end}"
 
       end -= conf.offset
 
@@ -841,6 +853,7 @@ lab = module.exports =
       produce_heapdump: false
       offline: false
       auto_shorten_time: true
+      deposit_allocation: '50/50'
 
 
     save config 

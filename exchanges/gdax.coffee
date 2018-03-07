@@ -3,7 +3,7 @@ fs = require('fs')
 
 
 
-RATE_LIMIT = 3
+MAX_RATE_LIMIT = RATE_LIMIT = 3
 
 GDAX_client = (opts) ->
   product_id = "#{opts.c2 or config.c2}-#{opts.c1 or config.c1}"
@@ -46,12 +46,12 @@ get_trades = (client, c1, c2, hours, after, stop_when_cached, callback, stop_aft
   cb = (error, response, data) -> 
     i += 1 
 
-    if Math.random() > .999
+    if Math.random() > .95 && RATE_LIMIT < MAX_RATE_LIMIT
       RATE_LIMIT++
       console.log {RATE_LIMIT}
 
     # console.log {RATE_LIMIT}
-    if error || !data || data.message || !response
+    if error || !data || data?.message || !response
 
       if data?.message == 'Rate limit exceeded'
         console.log '***'
@@ -59,6 +59,7 @@ get_trades = (client, c1, c2, hours, after, stop_when_cached, callback, stop_aft
         console.error {message: 'error downloading trades! trying again', error: error, data: data, c1, c2, after, stop_when_cached, callback, stop_after_hour}
       
       setTimeout ->
+  
         if Math.random() > .9 && RATE_LIMIT > 1
           RATE_LIMIT--
           console.log {RATE_LIMIT}
@@ -147,7 +148,8 @@ load_trades = (opts) ->
       console.error {message: 'error downloading trades! trying again', error: error, data: data}
       setTimeout ->
         client.getProductTrades client.productID, {limit: 1}, cb 
-      , 1000
+        times_sent.push Date.now()
+      , get_wait()
       return
 
     i = 0 # used in recursion for get_trades
@@ -158,7 +160,7 @@ load_trades = (opts) ->
     get_trades client, opts.c1, opts.c2, {}, latest_page, opts.stop_when_cached, opts.cb, opts.stop_after_hour
   
   client.getProductTrades client.productID, {limit: 1}, cb
-
+  times_sent.push Date.now()
 
 
 
@@ -167,13 +169,26 @@ _find_page_for_hour = (client, hour, current_page, previous_page, callback) ->
 
   if hour >= current_hour
     return callback(current_page)
+
+  if Math.random() > .95 && RATE_LIMIT < MAX_RATE_LIMIT
+    RATE_LIMIT++
+    console.log {RATE_LIMIT}
      
   cb = (error, response, data) -> 
     if error || !data || data.message
       console.error {message: 'error downloading trades! trying again', error: error, data: data, hour, current_page, previous_page}
-      setTimeout -> 
-        client.getProductTrades client.productID, {after: current_page, limit: limit}, cb
-      , 1000
+      setTimeout ->
+        if data.message == 'Invalid value for pagination after'
+          callback 0 
+          return
+        else    
+          if Math.random() > .9 && RATE_LIMIT > 1
+            RATE_LIMIT--
+            console.log {RATE_LIMIT}
+
+          client.getProductTrades client.productID, {after: current_page, limit: limit}, cb
+          times_sent.push Date.now()
+      , get_wait()
       return
 
     early_hour = later_hour = null
@@ -200,7 +215,7 @@ _find_page_for_hour = (client, hour, current_page, previous_page, callback) ->
 
 
   client.getProductTrades client.productID, {after: current_page, limit: limit}, cb
-
+  times_sent.push Date.now()
 
 
 
@@ -215,14 +230,15 @@ find_page_for_hour = (opts, callback) ->
       console.error {message: 'error downloading trades! trying again', error: error, data: data}
       setTimeout ->
         client.getProductTrades client.productID, {limit: 1}, cb 
-      , 1000
+        times_sent.push Date.now()
+      , get_wait()
       return
 
     current_hour = Math.floor(new Date(data[0].time).getTime() / 1000 / 60 / 60)
     _find_page_for_hour client, opts.hour, response.headers['cb-before'], 0, callback 
 
   client.getProductTrades client.productID, {limit: 1}, cb
-
+  times_sent.push Date.now()
 
 
 load_chart_data = (client, opts, callback) -> 
@@ -251,7 +267,8 @@ load_chart_data = (client, opts, callback) ->
         console.error {message: 'error getting chart data, trying again', error: error, message: data?.message}
         setTimeout -> 
           client.getProductHistoricRates productID, {start, end, granularity}, cb
-        , 1000
+          times_sent.push Date.now()
+        , get_wait()
         return 
 
       data = (d for d in data when (i == 0 || start_sec - 1 <= d[0]) && (last || d[0] < end_sec + 1))
@@ -270,6 +287,7 @@ load_chart_data = (client, opts, callback) ->
 
 
     client.getProductHistoricRates productID, {start, end, granularity}, cb
+    times_sent.push Date.now()
 
   next()
 
@@ -279,18 +297,14 @@ waiting_to_execute = 0
 outstanding_requests = 0
 
 module.exports = gdax = 
-  minimum_order: -> 
-    mins = 
-      BTC: .001
-      ETH: .01
-      BCH: .01
-      LTC: .1
-      USD: 10
-      EUR: 10
-      GBP: 10
-
-    console.assert config.c2 of mins 
-    mins[config.c2]
+  minimum_order_size:  
+    BTC: .001
+    ETH: .01
+    BCH: .01
+    LTC: .1
+    USD: 10
+    EUR: 10
+    GBP: 10
 
   minimum_rate_diff: -> 
     mins = 
@@ -327,6 +341,7 @@ module.exports = gdax =
       "ETH-BTC": 1463512661
       "LTC-BTC": 1475690400
       "BCH-USD": 1513728000
+      "BCH-BTC": 1516190400
 
     # time after which a pair has sustained 1-week exponentially 
     # weighted moving average of hourly USD transacted > $50k
@@ -337,6 +352,7 @@ module.exports = gdax =
       "ETH-BTC": 1489449600 # after 3/14/17
       "LTC-BTC": 1493769600 # after 5/3/17
       "BCH-USD": 1513728000
+      "BCH-BTC": 1516190400
 
 
 
@@ -528,7 +544,7 @@ module.exports = gdax =
       callback open_orders
 
     args = 
-      status: 'open'
+      # status: 'open' # defaults to [open, pending, active]
       product_id: "#{opts.c2}-#{opts.c1}"
 
     depaginated_request 'getOrders', args, cb
@@ -545,7 +561,8 @@ module.exports = gdax =
         
         setTimeout -> 
           client.getAccounts cb
-        , 50
+          times_sent.push Date.now()
+        , get_wait()
       else  
         balances = {}
         for balance in data
@@ -559,7 +576,7 @@ module.exports = gdax =
 
     outstanding_requests += 1
     client.getAccounts cb
-
+    times_sent.push Date.now()
 
   get_my_exchange_fee: (opts, callback) -> 
     callback 
@@ -579,7 +596,7 @@ module.exports = gdax =
       console.log 'place order GOT', data
       callback order_id: data.id, error: data.error
     , (error, response, data) -> 
-      if data.message?.indexOf('Order size is too small') > -1
+      if data?.message?.indexOf('Order size is too small') > -1
         return false 
       else 
         return true # retry on error
@@ -604,21 +621,26 @@ module.exports = gdax =
           error: 'Order already done'
       else 
         console.log 'Done canceling now placing:', opts
-        gdax.place_order
-          type: opts.type
-          rate: opts.rate 
-          amount: opts.amount
-          c1: opts.c1
-          c2: opts.c2
-          market: opts.market
-        , callback
+        if opts.amount >= gdax.minimum_order_size[opts.c2]
+          gdax.place_order
+            type: opts.type
+            rate: opts.rate 
+            amount: opts.amount
+            c1: opts.c1
+            c2: opts.c2
+            market: opts.market
+          , callback
+        else 
+          callback 
+            error: 'Too small of an order'
 
 
 queued_request = (method, opts, callback, error_callback) -> 
   client = GDAX_client opts
 
   ts = null 
-  cb = (error, response, data) ->
+  cb = (error, response, data) ->  
+
     if error || !data || data.message
       console.error "error carrying out #{method}",
         error: error
@@ -626,15 +648,25 @@ queued_request = (method, opts, callback, error_callback) ->
       
       if error_callback?(error, response, data) || !error_callback
         console.log 'Trying again.'
+
+        if Math.random() > .9 && RATE_LIMIT > 1
+          RATE_LIMIT--
+          console.log {RATE_LIMIT}
+
         setTimeout -> 
           ts = now()
           client[method] opts, cb
-        , 50
+          times_sent.push Date.now()
+        , get_wait()
       else 
         console.log 'Not trying again. Returning to execution'
         callback {error: data.message}
     
     else
+      if Math.random() > .95 && RATE_LIMIT < MAX_RATE_LIMIT
+        RATE_LIMIT++
+        console.log {RATE_LIMIT}
+
       outstanding_requests -= 1 
       lag_logger?(now() - ts)
       callback data
@@ -649,6 +681,7 @@ queued_request = (method, opts, callback, error_callback) ->
 
       console.log 'EXECUTING', method, opts
       client[method] opts, cb 
+      times_sent.push Date.now()
 
   waiting_to_execute += 1
   xecute()
@@ -665,14 +698,15 @@ depaginated_request = (method, opts, callback) ->
   all_data = []
 
   cb = (error, response, data) ->
-    if error || !data || data.message
+    if error || !data || data?.message
       console.error "error getting data for #{method}, trying again", {error: error, message: data?.message}
       
       lag_logger?(now() - ts)
       setTimeout -> 
         ts = now()
         client[method] opts, cb
-      , 50
+        times_sent.push Date.now()
+      , get_wait()
     
     else  
       lag_logger?(now() - ts)
@@ -683,7 +717,8 @@ depaginated_request = (method, opts, callback) ->
       should_continue = (opts.after || opts.after == 0) && (!opts.start || opts.start <= new Date(data[data.length - 1].created_at).getTime() / 1000 )
 
       if should_continue 
-        client[method] opts, cb 
+        client[method] opts, cb
+        times_sent.push Date.now() 
       else
         outstanding_requests -= 1 
         callback all_data
@@ -691,3 +726,4 @@ depaginated_request = (method, opts, callback) ->
   outstanding_requests += 1
   ts = now()
   client[method] opts, cb 
+  times_sent.push Date.now()

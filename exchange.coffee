@@ -11,7 +11,13 @@ module.exports = exchange =
   #####
   # PUBLIC API 
 
-  minimum_trade: -> exchange[config.exchange].minimum_order()
+  minimum_order_size: (currency) -> 
+    currency ||= config.c2
+    mins = exchange[config.exchange].minimum_order_size
+    if !(currency of mins) 
+      log_error true, {message: "minimum order size for #{currency} not defined"}
+    mins[currency]
+
   minimum_rate_diff: -> exchange[config.exchange].minimum_rate_diff()
 
   # opts: 

@@ -16,22 +16,18 @@ RATE_LIMIT = 6  # no more than 6 API requests per second
 module.exports = poloniex = 
   all_clear: -> outstanding_requests == 0 && queue.length == 0 
 
-  minimum_order: -> 
-    mins = 
-      BTC: .0001
-      ETH: .0001
-      XMR: .0001
-      STR: .1
-      BCH: .0001
-      LTC: .001
-      USDT: 1
-      DASH: .0001
-      REP: .01
-      ZEC: .0001
-      XRP: 1
-
-    console.assert config.c2 of mins 
-    mins[config.c2]
+  minimum_order_size:
+    BTC: .0001
+    ETH: .0001
+    XMR: .0001
+    STR: .1
+    BCH: .0001
+    LTC: .001
+    USDT: 1
+    DASH: .0001
+    REP: .01
+    ZEC: .0001
+    XRP: 1
 
   minimum_rate_diff: -> 
     mins = 
@@ -423,7 +419,7 @@ module.exports = poloniex =
 
 
   move_order: (opts, callback) -> 
-    console.assert !opts.market 
+    console.assert !opts.market && opts.order_id && opts.amount > 0 && opts.rate > 0
 
     poloniex.query_trading_api
       command: 'moveOrder'
@@ -436,9 +432,9 @@ module.exports = poloniex =
         # this happens if the trade got canceled outside the system or on a previous run that failed
         delete body.error 
 
-      if !body
+      if !body || body.error || !body.orderNumber
         callback
-          error: err 
+          error: err or body.error 
           response: resp 
           message: body.error 
 
@@ -528,7 +524,7 @@ trading_api_request = (params, callback) ->
 
       lag_logger?(now() - ts)
       if params.command in ['buy', 'sell']
-        console.log "#{params.command} returned", (err or ''), body
+        console.log "#{params.command} returned", {err, body, params}
 
       callback?(err, resp, body)
 

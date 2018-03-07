@@ -5,9 +5,26 @@ feature_engine = require './feature_engine'
 global.dealers = {}
 global.open_positions = {}
 
+global.log_error = (halt, data) -> 
+
+  if !config.simulation
+    errors = bus.fetch 'errors'
+    errors.logs ||= []
+    errors.logs.push [tick.time, JSON.stringify(data), new Error().stack]
+    bus.save errors 
+
+  if halt 
+    setTimeout ->
+      console.assert false, data
+    , 10
+  else 
+    console.error data
+
+
 
 
 learn_strategy = (name, teacher, strat_dealers) -> 
+
 
   console.assert uniq(strat_dealers), {message: 'dealers aren\'t unique!', dealers: strat_dealers}
 
@@ -96,6 +113,7 @@ init = ({history, clear_all_positions, take_position, cancel_unfilled, update_tr
   tick_interval = null
   tick_interval_no_unfilled = null
   for name in get_all_actors() 
+
     dealer_data = from_cache name
     dealer = dealers[name]
     has_open_positions = open_positions[name]?.length > 0
@@ -133,18 +151,19 @@ init = ({history, clear_all_positions, take_position, cancel_unfilled, update_tr
     intervals.push tick_interval
     tick_interval = Math.greatest_common_divisor intervals
 
-    intervals = [   
-      dealer_data.settings.eval_entry_every_n_seconds or config.eval_entry_every_n_seconds
-    ]
+    if !dealer_data.settings.series
+      intervals = [   
+        dealer_data.settings.eval_entry_every_n_seconds or config.eval_entry_every_n_seconds
+      ]
 
-    if !dealer_data.settings.never_exits
-      intervals.push dealer_data.settings.eval_exit_every_n_seconds or config.eval_exit_every_n_seconds
+      if !dealer_data.settings.never_exits
+        intervals.push dealer_data.settings.eval_exit_every_n_seconds or config.eval_exit_every_n_seconds
 
-    if !tick_interval_no_unfilled
-      tick_interval_no_unfilled = intervals[0]
+      if !tick_interval_no_unfilled
+        tick_interval_no_unfilled = intervals[0]
 
-    intervals.push tick_interval_no_unfilled
-    tick_interval_no_unfilled = Math.greatest_common_divisor intervals
+      intervals.push tick_interval_no_unfilled
+      tick_interval_no_unfilled = Math.greatest_common_divisor intervals
 
   history_buffer = (e.num_frames * res + 1 for res, e of feature_engine.resolutions)
   history_buffer = Math.max.apply null, history_buffer
@@ -326,7 +345,8 @@ find_opportunities = (balance) ->
     for opp,idx in opportunities
       msg["pos-#{idx}"] = opp.pos 
 
-    console.assert false, msg
+    log_error true, msg
+    return []
 
   opportunities
 
@@ -345,9 +365,6 @@ execute_opportunities = (opportunities) ->
 
       when 'cancel_unfilled'
         cancel_unfilled pos
-
-      when 'force_cancel'
-        force_cancel pos
 
       when 'exit'
         exit_position {pos, opportunity} 
@@ -392,9 +409,10 @@ check_wallet = (opportunities, balance) ->
 
     # console.log {message: 'yo', dealer: name, avail_ETH, avail_BTC, dealer_opportunities: by_dealer[name], balance: dbalance}
     if avail_BTC < 0 || avail_ETH < 0
-      out = if config.simulation then console.assert else console.error
+      out = if config.simulation then console.log else console.log
 
       out false, {message: 'negative balance', dealer: name, avail_ETH, avail_BTC, dealer_opportunities: by_dealer[name], balance: dbalance}
+      continue 
 
     for op in ops 
       r_ETH = op.required_c2 or 0
@@ -469,7 +487,12 @@ create_position = (spec, dealer) ->
   position
 
 exit_position = ({pos, opportunity}) ->
-  console.assert pos.entry, {message: 'position can\'t be exited because entry is undefined', pos, opportunity} 
+  if !pos.entry 
+    log_error true, 
+      message: 'position can\'t be exited because entry is undefined'
+      pos: pos
+      opportunity: opportunity
+    return
 
   rate = opportunity.rate 
   market_trade = opportunity.market 
@@ -523,7 +546,7 @@ took_position = (pos, error) ->
             pos: pos 
           pos[trade].created = pos.created # faster recovery
 
-    if !trade.exit && !trade.entry
+    if !pos.exit && !pos.entry
       return destroy_position pos 
     else 
       save pos
@@ -562,25 +585,26 @@ update_exit = ({pos, opportunity}) ->
       rate = parseFloat((Math.round(rate * 1000000) / 1000000).toFixed(6))
 
   if isNaN(rate) || !rate || rate == 0
-    console.assert false, 
+
+    return log_error true, 
       message: 'Bad rate for moving exit!',
       rate: rate 
       pos: pos 
 
   if !pos.entry 
-    console.assert false, 
+    return log_error true, 
       message: 'position can\'t be exited because entry is undefined'
       pos: pos
       rate: rate
 
   if pos.exit.to_fill == 0
-    console.assert false, 
+    return log_error true, 
       message: 'trying to move an exit on a trade that should already be closed'
       trade: pos.exit 
       fills: pos.exit.fills
 
   if pos.exit.market 
-    console.assert false, 
+    return log_error true, 
       message: 'trying to move a market exit'
       trade: pos.exit 
 
@@ -649,19 +673,20 @@ update_entry = ({pos, opportunity}) ->
       rate = parseFloat((Math.round(rate * 1000000) / 1000000).toFixed(6))
 
   if isNaN(rate) || !rate || rate == 0
-    console.assert false, 
+    return log_error true, 
       message: 'Bad rate for moving exit!',
       rate: rate 
       pos: pos 
 
   if pos.entry.to_fill == 0
-    console.assert false, 
+    return log_error true, 
       message: 'trying to move an entry on a trade that should already be closed'
       trade: pos.entry 
       fills: pos.entry.fills
+    return
 
   if pos.entry.market 
-    console.assert false, 
+    return log_error true, 
       message: 'trying to move a market trade'
       trade: pos.entry 
 
@@ -713,22 +738,6 @@ update_entry = ({pos, opportunity}) ->
 
 
 
-force_cancel = (pos) ->
-
-  console.log 'FORCE CANCELED', pos
-
-  cb = -> 
-    for trade in [pos.entry, pos.exit] when trade && !trade.closed
-      trade.amount = trade.amount - trade.to_fill
-      trade.to_fill = 0 
-      trade.force_canceled = true 
-
-  if pusher.cancel_unfilled
-    pusher.cancel_unfilled pos, cb
-  else
-    cb()
-
-
 
 cancel_unfilled = (pos) ->
   if pusher.cancel_unfilled 
@@ -763,7 +772,8 @@ destroy_position = (pos) ->
   open = open_positions[pos.dealer]
 
   if !config.simulation
-    console.assert pos.key?, {message: 'trying to destroy a position without a key', pos: pos}
+    if !pos.key 
+      return log_error true, {message: 'trying to destroy a position without a key', pos: pos}
 
   idx = positions.indexOf(pos)
   if idx == -1
@@ -888,7 +898,6 @@ action_priorities =
   exit: 1
   update_exit: 2
   cancel_unfilled: 3
-  force_cancel: 4
 
 hustle = (balance) -> 
   yyy = Date.now()     
@@ -911,7 +920,7 @@ hustle = (balance) ->
     #   # for op in opportunities
     #   #   if op not in fillable_opportunities
     #   #     console.log 'ELIMINATED:', op.pos.dealer
-    if fillable_opportunities.length > 0 
+    if fillable_opportunities.length > 0 && !config.disabled
       execute_opportunities fillable_opportunities
 
     t_.exec += Date.now() - yyy if t_?

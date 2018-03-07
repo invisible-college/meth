@@ -574,10 +574,11 @@ indicators =
     idx = stats[s].metrics.profit_index.length - 1
     profit = stats[s].metrics.profit_index[idx][1]
 
-    ret = 100 * profit / invested
-
     #annualize
-    ret *= 365 * 24 * 60 * 60 / (stats[s].metrics.end - stats[s].metrics.start)
+    years = (stats[s].metrics.end - stats[s].metrics.start) / (365 * 24 * 60 * 60)
+    ret = Math.pow((1 + profit / invested), 1 / years) - 1
+
+    ret *= 100
     indicator_cache.return[s] = ret
 
     ret

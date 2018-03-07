@@ -8,7 +8,7 @@ global.check_history_continuation = (engine, depth, weight) ->
   frames_required = frames_for_weight(weight) 
   
   if engine.num_frames < frames_required
-    console.assert false, 
+    log_error true, 
       message: """HISTORY NOT ENOUGH FOR ALPHA"""
       alpha: weight 
       frames_required: frames_required
