@@ -10,8 +10,38 @@ global.log_error = (halt, data) ->
   if !config.simulation
     errors = bus.fetch 'errors'
     errors.logs ||= []
-    errors.logs.push [tick.time, JSON.stringify(data), new Error().stack]
+    error = [tick.time, JSON.stringify(data), new Error().stack]
+    errors.logs.push error
     bus.save errors 
+
+    if config.mailgun
+      try
+        mailgun = require('mailgun-js') 
+          apiKey: config.mailgun.apiKey
+          domain: config.mailgun.domain
+
+        send_email = ({subject, message, recipient}) ->
+          mailgun.messages().send
+            from: config.mailgun.from
+            to: recipient or config.mailgun.recipient
+            subject: subject
+            text: message
+
+      catch e 
+        send_email = -> 
+          console.error 'could not send message beecause mailgun failed to load'
+
+      send_email 
+        subject: "Error for #{config.exchange} #{config.c1}-#{config.c2} at #{tick.time}"
+        message: """
+                    Data: 
+                    #{error[1]}
+
+
+                    Trace: 
+                    #{error[2]}
+                 """
+
 
   if halt 
     setTimeout ->

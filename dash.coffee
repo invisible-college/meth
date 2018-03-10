@@ -1,7 +1,6 @@
 
 wait_for_bus ->
   bus.render_when_loading = false
-  bus.disable_backup_cache = true 
   focus = fetch 'focus'
   focus.highlighted = null
   focus.params = []

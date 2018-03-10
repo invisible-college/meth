@@ -12,6 +12,7 @@
     "express": "^4.15.3",
     "gdax": "git://github.com/coinbase/gdax-node.git#master",
     "heapdump": "latest",
+    "mailgun-js": "^0.16.0",
     "mathjs": "^3.18.1",
     "minimist": "^1.2.0",
     "progress": "latest",
