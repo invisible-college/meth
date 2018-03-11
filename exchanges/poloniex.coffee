@@ -353,9 +353,9 @@ module.exports = poloniex =
       currencyPair: "#{opts.c1}_#{opts.c2}"
     , (err, resp, body) ->
 
-      if !body
+      if !body || body.error || !body.orderNumber
         callback
-          error: err 
+          error: err or body.error or 'Something went wrong, not sure what!'
           response: resp 
           message: body.error 
       else 
@@ -371,9 +371,9 @@ module.exports = poloniex =
     is_buy = opts.type == 'buy'
 
     cb = (err, resp, body) ->
-      if !body
+      if !body || body.error || !body.orderNumber
         callback
-          error: err 
+          error: err or body.error or 'Something went wrong, not sure what!'
           response: resp 
           message: body.error 
       else
@@ -434,7 +434,7 @@ module.exports = poloniex =
 
       if !body || body.error || !body.orderNumber
         callback
-          error: err or body.error 
+          error: err or body.error or 'Something went wrong, not sure what!'
           response: resp 
           message: body.error 
 
