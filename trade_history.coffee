@@ -293,7 +293,7 @@ module.exports = history =
 
     exchange.subscribe_to_trade_history 
       new_trade_callback: (new_trade) => 
-        @process_new_trade new_trade, true
+        @last_trade = @process_new_trade new_trade, true
     , callback
 
 
@@ -343,8 +343,6 @@ module.exports = history =
     trade.rate   = parseFloat trade.rate
     trade.amount = parseFloat trade.amount 
     trade.total  = parseFloat trade.total
-
-
 
     if preserve_sort
       @trades.unshift trade 

@@ -4,6 +4,7 @@ fs = require('fs')
 
 
 MAX_RATE_LIMIT = RATE_LIMIT = 3
+MAX_TRADING_API_LIMIT = 5
 
 GDAX_client = (opts) ->
   product_id = "#{opts.c2 or config.c2}-#{opts.c1 or config.c1}"
@@ -83,6 +84,7 @@ get_trades = (client, c1, c2, hours, after, stop_when_cached, callback, stop_aft
           amount: parseFloat(trade.size)
           total: parseFloat(trade.size) * parseFloat(trade.price)
           tradeID: trade.trade_id
+          type: trade.side
 
         trade_ids[trade.trade_id] = 1
 
@@ -92,10 +94,12 @@ get_trades = (client, c1, c2, hours, after, stop_when_cached, callback, stop_aft
       early_hour = hour
 
 
-    process.stdout.clearLine()
-    process.stdout.cursorTo 0
-    process.stdout.write "Loading GDAX history: #{i}, #{early_hour}, #{after}, #{(100 * i * limit / latest_page).toPrecision(4)}%"
-
+    try 
+      process.stdout.clearLine()
+      process.stdout.cursorTo 0
+      process.stdout.write "Loading GDAX history: #{i}, #{early_hour}, #{after}, #{(100 * i * limit / latest_page).toPrecision(4)}%"
+    catch e 
+      "probably in pm2"
 
     continue_loading = true
     if stop_when_cached
@@ -199,9 +203,12 @@ _find_page_for_hour = (client, hour, current_page, previous_page, callback) ->
         later_hour = hr
       early_hour = hr
 
-    process.stdout.clearLine()
-    process.stdout.cursorTo 0
-    process.stdout.write "Finding GDAX history for #{hour}: #{early_hour}, #{later_hour}, #{current_page}"
+    try 
+      process.stdout.clearLine()
+      process.stdout.cursorTo 0
+      process.stdout.write "Finding GDAX history for #{hour}: #{early_hour}, #{later_hour}, #{current_page}"
+    catch e 
+      "probably running in pm2"
 
     if early_hour <= target_hour && later_hour >= target_hour
       callback(current_page)
@@ -462,6 +469,8 @@ module.exports = gdax =
           amount: parseFloat(data.size)
           total: parseFloat(data.price) * parseFloat(data.size)
           date: new Date(data.time).getTime() / 1000
+          tradeID: data.trade_id
+          type: data.side
 
         opts.new_trade_callback trade 
 
@@ -585,21 +594,67 @@ module.exports = gdax =
 
 
   place_order: (opts, callback) -> 
-
-    queued_request opts.type, 
-      price: opts.rate
-      size: if !(opts.market && opts.type == 'buy') then opts.amount
-      funds: if opts.market && opts.type == 'buy' then parseFloat((Math.floor(opts.amount * opts.rate * 1000000) / 1000000).toFixed(6))
+    params = 
       product_id: "#{opts.c2}-#{opts.c1}"
       type: if opts.market then 'market' else 'limit'
-    , (data) -> 
+
+    if opts.post_only
+      console.assert !opts.market 
+      params.post_only = true
+
+      # reset rate based on last observed trade
+      last_trade = history.last_trade
+      new_rate = last_trade.rate 
+      if      opts.type == 'buy' && last_trade.type == 'sell'
+        new_rate -= gdax.minimum_rate_diff()
+      else if opts.type == 'sell' && last_trade.type == 'buy'
+        new_rate += gdax.minimum_rate_diff()
+
+      # reset amount based on new rate and old rate/amount if we're buying (can keep same amount if selling)
+      if opts.type == 'buy'
+        opts.amount = opts.amount * opts.rate / new_rate
+      opts.rate = new_rate
+
+    if !(opts.market && opts.type == 'buy')
+      amount = params.size = opts.amount
+    else 
+      amount = params.funds = parseFloat (Math.floor(opts.amount * opts.rate * 1000000) / 1000000).toFixed(6)
+
+    params.price = opts.rate
+
+    cb = (data) => 
       console.log 'place order GOT', data
+
+      if opts.post_only
+        console.log "post only got: ", data
+
+      if data.status == 'rejected' 
+
+        if opts.post_only
+          gdax.place_order opts, callback
+          return # skip the callback
+        
+        data.error ||= "Order rejected"
+
       callback order_id: data.id, error: data.error
-    , (error, response, data) -> 
+
+    error_callback = (error, response, data) -> 
+      if opts.post_only
+        console.log 'POST ONLY GOT ERROR CALLBACK:', data 
+
       if data?.message?.indexOf('Order size is too small') > -1
         return false 
+      else if data?.status == 'rejected' 
+        return false
       else 
         return true # retry on error
+
+    if amount < gdax.minimum_order_size[opts.c2] && !opts.market
+      callback 
+        error: 'Too small of an order'
+    else 
+      console.log 'PLACING ORDER', params
+      queued_request opts.type, params, cb, error_callback
 
   cancel_order: (opts, callback) -> 
     queued_request 'cancelOrder', opts.order_id, (data) -> 
@@ -621,18 +676,7 @@ module.exports = gdax =
           error: 'Order already done'
       else 
         console.log 'Done canceling now placing:', opts
-        if opts.amount >= gdax.minimum_order_size[opts.c2]
-          gdax.place_order
-            type: opts.type
-            rate: opts.rate 
-            amount: opts.amount
-            c1: opts.c1
-            c2: opts.c2
-            market: opts.market
-          , callback
-        else 
-          callback 
-            error: 'Too small of an order'
+        gdax.place_order opts, callback 
 
 
 queued_request = (method, opts, callback, error_callback) -> 
@@ -672,8 +716,8 @@ queued_request = (method, opts, callback, error_callback) ->
       callback data
 
   xecute = -> 
-    if outstanding_requests >= 10
-      setTimeout xecute, 50
+    if outstanding_requests >= MAX_TRADING_API_LIMIT
+      setTimeout xecute, 100
     else 
       outstanding_requests += 1
       waiting_to_execute -= 1

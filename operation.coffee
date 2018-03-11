@@ -33,7 +33,7 @@ log_tick = ->
   extend time, 
     earliest: if time.earliest? then time.earliest else tick.started
     latest: tick.time
-  bus.save time          
+  bus.save time
 
 one_tick = ->
   return if tick.lock
@@ -70,7 +70,6 @@ one_tick = ->
   tick.lock = true
 
 
-
   cb = ->
     update_position_status ->
       update_account_balances ->
@@ -103,9 +102,10 @@ one_tick = ->
 
 
 
-              # KPI (stats) ->
-              #   stats.key = 'stats'
-              #   save stats
+              KPI (stats) ->
+                m = stats.all.metrics
+                m.key = 'stats' 
+                save m
 
           , 10
 
@@ -321,6 +321,7 @@ take_position = (pos, callback) ->
       c1: config.c1 
       c2: config.c2
       market: trade.market
+      post_only: trade.post_only
     , do (trade, idx) -> (result) ->
 
       trades_left--
@@ -387,6 +388,7 @@ update_trade = ({pos, trade, rate, amount}, callback) ->
       type: trade.type
       c1: config.c1 
       c2: config.c2
+      post_only: trade.post_only
     , cb
 
   else 
@@ -397,6 +399,7 @@ update_trade = ({pos, trade, rate, amount}, callback) ->
       rate: rate
       c1: config.c1 
       c2: config.c2
+      post_only: trade.post_only
     , cb
 
 

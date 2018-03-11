@@ -484,15 +484,6 @@ create_position = (spec, dealer) ->
         trade.rate = parseFloat((rounder(trade.rate * 1000000) / 1000000).toFixed(6))
       trade.amount = parseFloat((Math.floor(trade.amount * 1000000) / 1000000).toFixed(6))
 
-      if config.c2 == 'BTC' && trade.amount < .0001
-        trade.market = true
-      if config.c2 == 'ETH' && trade.amount < .001
-        trade.market = true
-      if config.c2 == 'BCH' && trade.amount < .001
-        trade.market = true
-      if config.c2 == 'LTC' && trade.amount < .01
-        trade.market = true
-
   if buy
     buy.type = 'buy'
     buy.to_fill ||= if buy.market then buy.amount * buy.rate else buy.amount
@@ -526,6 +517,7 @@ exit_position = ({pos, opportunity}) ->
 
   rate = opportunity.rate 
   market_trade = opportunity.market 
+  post_only = opportunity.post_only
   amount = opportunity.amount or pos.entry.amount
   type = if pos.entry.type == 'buy' then 'sell' else 'buy'
 
@@ -536,6 +528,7 @@ exit_position = ({pos, opportunity}) ->
     to_fill: if market_trade && type == 'buy' then amount * rate else amount
     fill_to: opportunity.fill_to
     market: if market_trade then true 
+    post_only: if post_only then true 
 
   if config.exchange == 'gdax' 
     for trade in [pos.exit.rate] when trade

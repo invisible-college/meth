@@ -216,6 +216,7 @@ simulate = (ts, callback) ->
 
     t_.x += Date.now() - zzz
     console.assert end_idx < history.trades.length, {message: 'ending wrong!', end_idx: end_idx, trades: history.trades.length}
+    history.last_trade = history.trades[end_idx]
     tick.trade_idx = end_idx
     ############################
 
