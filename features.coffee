@@ -22,6 +22,9 @@ global.check_history_continuation = (engine, depth, weight) ->
 
 module.exports = f = {}
 
+INC = 250
+
+
 
 
 f.volume = (engine, args) -> 
@@ -37,12 +40,37 @@ f.volume = (engine, args) ->
     v = 0
     for i in [t..t2] when i < engine.num_frames
 
+
       fb = engine.frame_boundary(i)
       idx = fb[0]
-      while idx < fb[1]
+      boundary = fb[1]
+
+      while idx % INC > 0 && idx < boundary
         trade = history.trades[idx] 
         v += trade.amount
         idx += 1
+
+      while idx < boundary - INC
+
+        if !feature_cache.volume[idx]
+          nv = 0
+          end_idx = idx + INC
+          while idx < end_idx
+            trade = history.trades[idx] 
+            nv += trade.amount         
+            idx += 1
+          idx -= INC 
+          feature_cache.volume[idx] = nv 
+          
+        v += feature_cache.volume[idx] 
+
+        idx += INC
+
+      while idx < boundary
+        trade = history.trades[idx] 
+        v += trade.amount
+        idx += 1
+
 
     # cut off recursing after the impact of calculating the previous time 
     # frame's velocity is negligible. Note that this method assumes the 
@@ -57,7 +85,7 @@ f.volume = (engine, args) ->
       v = Math.weighted_average v, v2, weight
       
     engine.volume_cache[k] = v
-    v 
+
 
 f.volume.frames = (args) -> 
   t = args.t or 0
@@ -78,17 +106,42 @@ f.price = (engine, args) ->
 
     amount = 0
     total = 0
-    num = 0
     for i in [t..t2] when i < engine.num_frames
 
       fb = engine.frame_boundary(i)
       idx = fb[0]
-      while idx < fb[1]
+      boundary = fb[1]
+
+      while idx % INC > 0 && idx < boundary
         trade = history.trades[idx] 
-        amount += trade.amount
-        total += trade.amount * trade.rate #trade.total # total from trade history can't be relied on b/c of rounding issue
-        num++
+        amount += trade.amount 
+        total += trade.amount * trade.rate 
         idx += 1
+
+      while idx < boundary - INC
+
+        if !feature_cache.price[idx]
+          namount = ntotal = 0
+          end_idx = idx + INC
+          while idx < end_idx
+            trade = history.trades[idx] 
+            namount += trade.amount 
+            ntotal += trade.amount * trade.rate 
+            idx += 1
+          idx -= INC 
+          feature_cache.price[idx] = [namount, ntotal] 
+          
+        val = feature_cache.price[idx]   
+        amount += val[0]
+        total += val[1]
+        idx += INC
+
+      while idx < boundary
+        trade = history.trades[idx] 
+        amount += trade.amount 
+        total += trade.amount * trade.rate 
+        idx += 1
+
 
     engine.price_cache[k] = [amount, total]
   else 
@@ -116,9 +169,13 @@ f.price = (engine, args) ->
 
   p 
 
+
+
+
 f.price.frames = (args) -> 
   t = args.t or 0
   t + frames_for_weight((args.weight) or 1) + (args.t2 or 0) + 1
+
 
 
 
@@ -130,11 +187,39 @@ f.min_price = (engine, args) ->
 
     fb = engine.frame_boundary(i)
     idx = fb[0]
-    while idx < fb[1]
+    boundary = fb[1]
+
+    while idx % INC > 0 && idx < boundary
       trade = history.trades[idx] 
-      if min > trade.rate 
+      if trade.rate < min 
         min = trade.rate 
       idx += 1
+
+    while idx < boundary - INC
+
+      if !feature_cache.min_price[idx]
+        nmin = Infinity
+        end_idx = idx + INC
+        while idx < end_idx
+          trade = history.trades[idx] 
+          if nmin < trade.rate 
+            nmin = trade.rate         
+          idx += 1
+        idx -= INC 
+        feature_cache.min_price[idx] = nmin 
+        
+      val = feature_cache.min_price[idx]   
+      if val < min 
+        min = val 
+
+      idx += INC
+
+    while idx < boundary
+      trade = history.trades[idx] 
+      if trade.rate < min 
+        min = trade.rate 
+      idx += 1
+
 
   if min == Infinity
     min = engine.last_price args
@@ -145,22 +230,50 @@ f.max_price = (engine, args) ->
   t = args.t
   t2 = args.t2 or t
   max = 0
-
   for i in [t..t2] when i < engine.num_frames
 
     fb = engine.frame_boundary(i)
     idx = fb[0]
-    while idx < fb[1]
+    boundary = fb[1]
+
+    while idx % INC > 0 && idx < boundary
       trade = history.trades[idx] 
-      if max < trade.rate 
+      if trade.rate > max 
         max = trade.rate 
       idx += 1
 
-  #console.assert max == max2
+    while idx < boundary - INC
+
+      if !feature_cache.max_price[idx]
+        nmax = 0
+        end_idx = idx + INC
+        while idx < end_idx
+          trade = history.trades[idx] 
+          if nmax < trade.rate 
+            nmax = trade.rate         
+          idx += 1
+        idx -= INC 
+        feature_cache.max_price[idx] = nmax 
+        
+      val = feature_cache.max_price[idx]   
+      if val > max 
+        max = val 
+
+      idx += INC
+
+    while idx < boundary
+      trade = history.trades[idx] 
+      if trade.rate > max 
+        max = trade.rate 
+      idx += 1
+
+
   if max == 0
     max = engine.last_price args
 
-  max
+  max 
+
+
 
 f.min_price.frames = f.max_price.frames = (args) -> f.last_price.frames(args) + (args.t2 or args.t or 0)
 
@@ -475,52 +588,83 @@ f.RSI.frames = (args) ->
            
 
 
+MACD_EMA = (engine, t, alpha, t_unit, depth, args) -> 
+  next_time = t - t_unit
+  val = engine.MACD_signal.past_result(args, next_time)
+  return val if MIN_HISTORY_INFLUENCE > Math.pow( (1 - alpha), depth)    
+  alpha * val + (1 - alpha) * MACD_EMA(engine, next_time, alpha, t_unit, depth + 1, args)
+
+
 f.MACD_signal = (engine, args, all_engines) -> 
-
-  # MACD_line: (12-day EMA - 26-day EMA)
-  # signal_line: 9-day EMA of MACD Line
-  # calculated from MACD function: MACD_histogram = MACD Line - Signal Line
-
+  feature = args.MACD_feature or 'price'
   long_resolution = engine 
   short_resolution = all_engines[args.short_resolution]
 
   weight = args.weight
-  MACD_weight = 1
 
-  day12_price = short_resolution.price {t: args.t, weight}
-  day26_price =  long_resolution.price {t: args.t, weight}
+  day12 = short_resolution[feature] {t: args.t, weight}
+  day26 =  long_resolution[feature] {t: args.t, weight}
 
-  MACD = day12_price - day26_price
+  if feature == 'volume'
+    day26 *= short_resolution.resolution / long_resolution.resolution
 
-  should_continue = MACD_weight != 1 && check_history_continuation(engine, args.t, MACD_weight)
-  if should_continue
-    MACD = MACD_weight * MACD + (1 - MACD_weight) * engine.MACD_signal({t: args.t + 1, weight: MACD_weight, short_resolution: args.short_resolution})
+  MACD = day12 - day26
+
+  MACD_weight = args.MACD_weight or 1
+
+  #should_continue = MACD_weight != 1 && check_history_continuation(engine, args.t, MACD_weight)
+  if MACD_weight < 1 #should_continue
+    EMAD = MACD_EMA(engine, engine.now, MACD_weight, 6 * (args.eval_entry_every_n_seconds or config.eval_entry_every_n_seconds), 1, args)
+    return MACD if !EMAD
+    MACD = MACD_weight * MACD + (1 - MACD_weight) * EMAD
 
   MACD
 
 f.MACD = (engine, args, all_engines) -> 
+  # MACD_line: (12-day EMA - 26-day EMA)
+  # signal_line: 9-day EMA of MACD Line
+  # calculated from MACD function: MACD_histogram = MACD Line - Signal Line
+  feature = args.MACD_feature or 'price'
   long_resolution = engine 
   short_resolution = all_engines[args.short_resolution]
+
   weight = args.weight
 
-  day12_price = short_resolution.price {t: args.t, weight}
-  day26_price = long_resolution.price  {t: args.t, weight}
+  day12 = short_resolution[feature] {t: args.t, weight}
+  day26 = long_resolution[feature]  {t: args.t, weight}
 
-  MACD = day12_price - day26_price
+  if feature == 'volume'
+    day26 *= short_resolution.resolution / long_resolution.resolution
+
+  MACD = day12 - day26
   signal = engine.MACD_signal args 
 
   MACD - signal 
 
 f.MACD.frames = f.MACD_signal.frames = (args) -> 
   weight = args.weight
-  MACD_weight = 1 #Math.min .9, args.weight * 12/9
+  MACD_weight = args.MACD_weight or 1 #Math.min .9, args.weight * 12/9
   t = args.t or 0
+  feature = args.MACD_feature or 'price'
 
-  frames = f.price.frames
-    t: t + frames_for_weight(MACD_weight) + 1
+  frames = f[feature].frames
+    #t: t + frames_for_weight(MACD_weight) + 1
+    t: t + 1
     weight: weight
 
   frames 
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

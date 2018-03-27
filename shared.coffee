@@ -1,6 +1,11 @@
 
 if !module?
   module = {}
+
+
+is_server = -> 
+  global? && !bus?.remote
+
 module.exports = 
 
   get_settings: (name) ->
@@ -8,21 +13,21 @@ module.exports =
     if name of get_settings.cache
       return get_settings.cache[name]
 
-    if global? && name[0] == '/'
+    if is_server() && name[0] == '/'
       name = deslash name
 
     if name == 'all' || deslash(name) in get_strategies()
       get_settings.cache[name] = null 
 
-    else if fetch(name).settings?
-      settings = fetch(name).settings
+    else if bus.fetch(name).settings?
+      settings = bus.fetch(name).settings
       get_settings.cache[name] = Object.freeze(bus.clone(settings))
 
     get_settings.cache[name]
 
   get_strategies: -> 
-    key = if global? then 'operation' else '/operation'
-    operation = fetch(key)
+    key = if is_server() then 'operation' else '/operation'
+    operation = bus.fetch(key)
     strategies = []
     for name, strategy of operation when name != 'key'
       strategies.push name 
@@ -33,8 +38,8 @@ module.exports =
     if get_dealers.cache?
       return get_dealers.cache.slice()
 
-    key = if global? then 'operation' else '/operation'
-    operation = if load_from_cache then from_cache(key) else fetch key
+    key = if is_server() then 'operation' else '/operation'
+    operation = if load_from_cache then from_cache(key) else bus.fetch key
     loaded = Object.keys(operation).length > 1
 
     dealers = []
@@ -43,7 +48,7 @@ module.exports =
         settings = get_settings(dealer)
         loaded &&= settings?
         if !settings? || !settings.series
-          dealer = if global? then deslash(dealer) else dealer
+          dealer = if is_server() then deslash(dealer) else dealer
           
           console.assert dealer != 'all', 
             message: 'NO WAY!'
@@ -63,8 +68,8 @@ module.exports =
     if get_series.cache?
       return get_series.cache.slice()
 
-    key = if global? then 'operation' else '/operation'
-    operation = if load_from_cache then from_cache(key) else fetch key
+    key = if is_server() then 'operation' else '/operation'
+    operation = if load_from_cache then from_cache(key) else bus.fetch key
     loaded = Object.keys(operation).length > 1
 
     series = []
@@ -73,7 +78,7 @@ module.exports =
         settings = get_settings(dealer)
         loaded &&= settings?
         if settings?.series
-          dealer = if global? then deslash(dealer) else dealer
+          dealer = if is_server() then deslash(dealer) else dealer
           series.push dealer #from_cache(s).parent
     
     if loaded
@@ -183,7 +188,7 @@ module.exports =
 
 
   get_name: (base, params, differentiating_params) ->
-    if !global? && base[0] != '/'
+    if !is_server() && base[0] != '/'
       name = "/#{base}" 
     else 
       name = base
@@ -202,9 +207,9 @@ module.exports =
     name 
 
   from_cache: (key) -> 
-    if global? && key[0] == '/'
+    if is_server() && key[0] == '/'
       key = deslash key 
-    bus.cache[key] || {key}
+    bus.cache[key] || bus.fetch[key] || {key}
 
   deslash: (key) -> 
     if key?[0] == '/'

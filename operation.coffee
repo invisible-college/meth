@@ -36,38 +36,46 @@ log_tick = ->
   bus.save time
 
 one_tick = ->
-  return if tick.lock
+  # if tick.lock
+  #   console.log "Skipping tick because it is still locked"
+  #   return 
      
   tick.time = now()
   time = fetch 'time'  
   
   # check if we need to tick
-  needs_to_run = false 
+  has_unfilled = false 
   for dealer,positions of open_positions when positions.length > 0
-    has_unfilled = false
     for pos in positions 
       if (pos.entry && !pos.entry.closed) || (pos.exit && ((!pos.exit.fill_to && !pos.exit.closed) || (pos.exit.fill_to && pos.exit.fill_to < pos.exit.to_fill)    ))
         has_unfilled = true 
         break 
+    break if has_unfilled
 
-    inc = if has_unfilled 
-            pusher.tick_interval
-          else 
-            pusher.tick_interval_no_unfilled
+  inc = if has_unfilled 
+          pusher.tick_interval
+        else 
+          pusher.tick_interval_no_unfilled
 
-    if tick.time - time.latest >= inc 
-      needs_to_run = true 
-      break 
+  needs_to_run = tick.time - time.latest >= inc 
 
-  if !needs_to_run
+  if !needs_to_run && time.earliest?
     return
 
   if config.disabled
     log_tick()
     return
 
+
+  if !has_unfilled && config.reset_every && tick.time - (time.last_reset or 0) > config.reset_every * 60 * 60
+    if !exchange.all_clear()
+      log_error false, {message: "Want to reset, but exchange has outstanding requests", time}
+    else 
+      console.log 'Due for a reset. Assuming a monitoring process that will restart the app'
+      setTimeout process.exit, 5000
+
   console.log "TICKING @ #{tick.time}! #{all_lag.length} queries with #{Math.average(all_lag)} avg lag"
-  tick.lock = true
+  # tick.lock = true
 
 
   cb = ->
@@ -83,31 +91,29 @@ one_tick = ->
             pusher.hustle balance
 
           # wait for the trades or cancelations to complete
-          i = setInterval ->
+          i = setImmediate ->
 
-            if exchange.all_clear()
+            history.prune()
 
-              clearInterval i
-
-              history.prune()
-
-              for name in get_all_actors()
-                bus.save from_cache(name)
+            for name in get_all_actors()
+              bus.save from_cache(name)
 
 
-              tick.lock = false  #...and now we're done with this tick
-              all_lag = []
+            # tick.lock = false  #...and now we're done with this tick
+            all_lag = []
 
-              log_tick()
+            log_tick()
 
+            KPI (stats) ->
+              m = stats.all.metrics                
+              m.key = 'stats' 
+              bus.save m
 
+              f = bus.fetch 'fees'
+              f.fees = m.fees 
+              f.slippage = stats.all.slippage
+              bus.save f
 
-              KPI (stats) ->
-                m = stats.all.metrics
-                m.key = 'stats' 
-                save m
-
-          , 10
 
   history.load_price_data (time.earliest or tick.started) - tick.history_to_keep, now(), cb, cb
  
@@ -192,11 +198,12 @@ update_position_status = (callback) ->
                     break if already_processed
                   continue if already_processed
                   new_fill.type = t.type
+                  new_fill.slippage = fill.amount * Math.abs(fill.rate - t.original_rate) / t.original_rate
                   t.fills.push new_fill
 
 
             if t.fills.length > 0 
-              if t.market && t.type == 'buy'
+              if t.flags?.market && t.type == 'buy'
                 t.to_fill = t.total - Math.summation (f.total for f in t.fills)
               else 
                 t.to_fill = t.amount - Math.summation (f.amount for f in t.fills)
@@ -215,14 +222,14 @@ update_position_status = (callback) ->
                   order: order_id 
                   trade: t
 
-
             if t.to_fill == 0 && !orders_completed
-              log_error true, {message: "Nothing to fill but orders not completed", trade: t, fills: t.fills}
+
+              log_error false, {message: "Nothing to fill but orders not completed", trade: t, fills: t.fills, open_orders}
 
             if orders_completed 
 
-              if ( (t.market && t.type == 'buy')  && t.to_fill > exchange.minimum_order_size(config.c1)) || \
-                 ((!t.market || t.type == 'sell') && t.to_fill > exchange.minimum_order_size())
+              if ( (t.flags?.market && t.type == 'buy')  && t.to_fill > exchange.minimum_order_size(config.c1)) || \
+                 ((!t.flags?.market || t.type == 'sell') && t.to_fill > exchange.minimum_order_size() && t.to_fill * t.rate > exchange.minimum_order_size(config.c1))
                 # this trade still needs more fills
                 t.current_order = null 
 
@@ -247,6 +254,10 @@ update_position_status = (callback) ->
 
                   if fill.date > last 
                     last = fill.date
+
+                if !(t.fills?.length > 0)
+                  last = t.created
+                  log_error false, {message: "Trade is closing but had no fills", trade: t, fills: t.fills, pos}
 
                 t.amount = amount
                 t.total = total
@@ -320,8 +331,7 @@ take_position = (pos, callback) ->
       rate: trade.rate
       c1: config.c1 
       c2: config.c2
-      market: trade.market
-      post_only: trade.post_only
+      flags: trade.flags
     , do (trade, idx) -> (result) ->
 
       trades_left--
@@ -341,21 +351,24 @@ take_position = (pos, callback) ->
           amount: amount
           rate: rate
       else 
+        trade.last_ordered = tick.time
         trade.current_order = result.order_id
-        trade.orders ||= []
+        trade.orders ?= []
         if trade.current_order && trade.current_order not in trade.orders 
           trade.orders.push trade.current_order
-
+        if result.info 
+          trade.info ?= []
+          trade.info.push result.info 
         console.log "Placed order:", trade
-        bus.save pos if pos.key
+        bus.save pos
 
-      if trades_left == 0 
+      if trades_left <= 0 
         callback error
 
 
 update_trade = ({pos, trade, rate, amount}, callback) -> 
 
-  console.assert !trade.market
+  console.assert !trade.flags?.market
 
   cb = (result) -> 
     if result.error
@@ -376,6 +389,10 @@ update_trade = ({pos, trade, rate, amount}, callback) ->
       if new_order && new_order not in trade.orders 
         trade.orders.push new_order
       trade.current_order = new_order
+      if result.info 
+        trade.info ?= []
+        trade.info.push result.info 
+
       bus.save pos if pos.key
 
     callback result.error
@@ -388,7 +405,7 @@ update_trade = ({pos, trade, rate, amount}, callback) ->
       type: trade.type
       c1: config.c1 
       c2: config.c2
-      post_only: trade.post_only
+      flags: trade.flags
     , cb
 
   else 
@@ -399,7 +416,7 @@ update_trade = ({pos, trade, rate, amount}, callback) ->
       rate: rate
       c1: config.c1 
       c2: config.c2
-      post_only: trade.post_only
+      flags: trade.flags
     , cb
 
 
@@ -499,7 +516,7 @@ update_account_balances = (callback) ->
 
         if buy
           # used or reserved for buying remaining eth
-          for_purchase = if buy.market then buy.to_fill else buy.to_fill * buy.rate
+          for_purchase = if buy.flags?.market then buy.to_fill else buy.to_fill * buy.rate
           dbtc_on_order += for_purchase
           dbtc -= for_purchase
 
@@ -540,15 +557,16 @@ update_account_balances = (callback) ->
         output = if config.simulation then console.assert else console.error
 
         fills = []
+        fills_out = []
         for pos in positions
           for trade in [pos.entry, pos.exit] when trade 
             fills = fills.concat trade.fills
             console.log trade
             for fill in trade.fills
               if fill.type == 'sell'
-                console.log "#{fill.total} -#{fill.amount} #{fill.fee}"
+                fills_out.push "#{trade.created} #{fill.order_id}  #{fill.total}  -#{fill.amount} #{fill.fee}"
               else 
-                console.log "-#{fill.total} #{fill.amount} #{fill.fee}"
+                fills_out.push "#{trade.created} #{fill.order_id}  -#{fill.total}  #{fill.amount}  #{fill.fee}"
 
         log_error config.simulation,
           message: 'negative balance!?!'
@@ -557,6 +575,7 @@ update_account_balances = (callback) ->
           dbalance: sheet[dealer]
           positions: positions
           fills: fills
+          fills_out: fills_out
 
 
     sheet.balances.c1 = sheet.deposits.c1 + btc
@@ -602,6 +621,48 @@ update_fee_schedule = (callback) ->
     callback()
 
 
+migrate_data = -> 
+  migrate = bus.fetch('migrations')
+
+  if !migrate.flags_and_fills
+    console.warn 'MIGRATING FLAGS AND FILLS!'
+
+    for key, pos of bus.cache
+      if key.match('position/') && key.split('/').length == 2 && !pos.series_data
+        for trade in [pos.entry, pos.exit] when trade 
+          if trade.market
+            trade.flags ?= {}
+            trade.flags.market = true 
+            delete trade.market 
+          if trade.post_only
+            trade.flags ?= {}
+            trade.flags.post_only = true 
+            delete trade.post_only 
+          if trade.auto_adjust
+            trade.flags ?= {}
+            trade.flags.auto_adjust = true 
+            delete trade.auto_adjust 
+
+          if !trade.flags?.order_method?
+            trade.flags ?= {}
+            trade.flags.order_method = 0 
+            if trade.flags?.post_only 
+              trade.flags.order_method = 1
+
+          if trade.original_rate? || (pos.original_exit? && !trade.entry)
+            original_rate = trade.original_rate or pos.original_exit
+            for fill in (trade.fills or []) when !fill.slippage?
+              fill.slippage = fill.amount * Math.abs(fill.rate - original_rate) / original_rate
+
+            if pos.original_exit
+              trade.original_rate = pos.original_exit
+              delete pos.original_exit
+        
+        bus.save pos
+
+    migrate.flags_and_fills = true
+    bus.save migrate 
+
 
 
 
@@ -623,10 +684,13 @@ operation = module.exports =
       accounting_currency: 'USDT'
       enforce_balance: true
 
-    bus.save config 
+    bus.save config
+
+    migrate_data() 
 
 
     time = from_cache 'time'
+
 
     console.log 'STARTING METH'
 
@@ -641,9 +705,23 @@ operation = module.exports =
     tick.started = ts = now()
     tick.history_to_keep = history_width
 
+    time.last_reset = tick.started
+    bus.save time
+
+
+    for name in get_all_actors()
+      dealer = from_cache name 
+      if dealer.locked 
+        dealer.locked = false 
+        bus.save dealer 
+        log_error false, {message: "Unlocked dealer on reset. Could have bad state.", name}
+
+
     history.load_price_data (time.earliest or tick.started) - history_width, ts, ->
 
       history.load ts - history_width, ts, ->
+
+        history.last_trade = history.trades[0]
 
         console.log "...connecting to #{config.exchange} live updates"
         
@@ -661,6 +739,9 @@ operation = module.exports =
 
                 one_tick()
                 setInterval one_tick, pusher.tick_interval * 1000
+
+    
+
 
   setup: ({port, db_name, clear_old}) -> 
     global.pointerify = true
@@ -773,3 +854,5 @@ operation = module.exports =
       res.send(html)
 
     bus.http.use('/node_modules', express.static('node_modules'))
+
+

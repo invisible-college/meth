@@ -44,7 +44,8 @@ add_to_cache = (dealer_or_dealers, name) ->
     # console.timeEnd(name)
 
 compute_KPI = (dealer_or_dealers, name) ->
-  if name && bus?.cache.stats?[name]
+
+  if name && bus?.cache.stats?[name] && config?.simulation
     return bus.cache.stats[name]
 
   price_data = from_cache '/price_data' 
@@ -68,8 +69,7 @@ compute_KPI = (dealer_or_dealers, name) ->
 
   positions = cached_positions[name]
 
-
-  if name && bus?.cache.stats?[name]
+  if name && bus?.cache.stats?[name] && config?.simulation
     return bus.cache.stats[name]
 
 
@@ -86,8 +86,10 @@ compute_KPI = (dealer_or_dealers, name) ->
   gains = 0 
 
 
-
-
+  slippage = 0 
+  slip_tracked = 0 
+  all_slippage = []
+  slippage2 = []
   for p in positions
     more_than_day  += 1 if (!p.closed && ts - p.created > 24 * 60 * 60) || ( p.closed && p.closed - p.created > 24 * 60 * 60)
     more_than_hour += 1 if (!p.closed && ts - p.created > 60 * 60) || ( p.closed && p.closed - p.created > 60 * 60)
@@ -99,12 +101,45 @@ compute_KPI = (dealer_or_dealers, name) ->
       completed += 1
 
     gains += 1 if p.closed && (p.profit or p.expected_profit) > 0
-      
+
+    for trade in [p.entry, p.exit] when trade?.original_rate?
+      original_rate = trade.original_rate
+      slipped = Math.abs(original_rate - trade.rate) / original_rate
+
+      if trade.flags?.order_method == 1        
+        slippage += slipped
+
+        slipped_amt = 0
+        for fill in (trade.fills or [])
+          slipped_amt += fill.slippage
+
+        all_slippage.push 
+          resets: trade.orders?.length or trade.resets
+          slipped: slipped
+          order_depth: trade.info 
+          type: trade.type
+          amt: trade.amount
+          slipped_amt: slipped_amt
+        slip_tracked += 1
+
+      else if trade.flags?.order_method == 0     
+        slippage2.push
+          resets: trade.orders?.length or trade.resets
+          slipped: slipped
+          order_depth: trade.info 
+          type: trade.type
+          amt: trade.amount
+
+
 
   stats = 
     dealers: dealer_or_dealers
     more_than_day: more_than_day / (positions.length or 1)
     more_than_hour: more_than_hour / (positions.length or 1)
+    slippage: 
+      avg: if slip_tracked > 0 then slippage / slip_tracked else 0 
+      all: all_slippage
+      all2: slippage2
     status:
       open: open
       completed: completed
@@ -139,7 +174,7 @@ compute_KPI = (dealer_or_dealers, name) ->
   series = 
     profit_index: []
     unit_profits: []
-    fees: [] 
+    fees: []
     volume: [] 
     fee_rate: []    
     c1_fees: []
@@ -154,7 +189,6 @@ compute_KPI = (dealer_or_dealers, name) ->
     end: dates[dates.length - 1] / 1000
 
   start_idx = price_data.c1xc2.length - dates.length
-
   for period,idx in dates
 
     last_period = start_idx + idx
@@ -180,6 +214,7 @@ compute_KPI = (dealer_or_dealers, name) ->
 
     # trade-level metrics
     c2_fees = c1_fees = volume = 0 
+
     while true 
 
       break if fills.length == 0 || fills[fills.length - 1].date > period / 1000 + period_length
@@ -194,18 +229,18 @@ compute_KPI = (dealer_or_dealers, name) ->
         cur_balance.c2 += fill.amount
 
         if config.exchange == 'poloniex'
-          fee = fill.fee or fill.amount * xfee
+          fee = if fill.fee? then fill.fee else fill.amount * xfee
           c2_fees += fee
           cur_balance.c2 -= fee
         else 
-          fee = fill.fee or fill.total * xfee
+          fee = if fill.fee? then fill.fee else fill.total * xfee
           c1_fees += fee
           cur_balance.c1 -= fee
 
       else 
         cur_balance.c1 += fill.total
         cur_balance.c2 -= fill.amount
-        fee = fill.fee or fill.total * xfee 
+        fee = if fill.fee? then fill.fee else fill.total * xfee 
         c1_fees += fee
         cur_balance.c1 -= fee
 
@@ -333,7 +368,6 @@ KPI = (callback) ->
       save time
     KPI.ts = time.earliest
 
-    # todo: will price data be accurate for live bot?
     dates = KPI.dates = (o.date * 1000 for o in price_data.c1xc2 when o.date >= time.earliest - price_data.granularity ) #&& o.date <= time.latest)
     dates.sort()
     KPI.period_length = (dates[1] - dates[0]) / 1000

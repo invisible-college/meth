@@ -569,7 +569,8 @@ strats.DM_crossover = (v) ->
         entry: true
         rate: last
         amount: if action == 'buy' then .4 * args.balance[args.dealer].balances.c1 / last else .4 * args.balance[args.dealer].balances.c2
-        market: true
+        flags: 
+          market: true
 
       return pos 
 

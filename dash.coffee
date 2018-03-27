@@ -1980,6 +1980,7 @@ dom.METH_TABLE = ->
     style: 
       #paddingLeft: 14
       color: '#ccc'
+      fontSize: 13
 
     # PULSE
     #   key: 'pulse'

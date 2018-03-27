@@ -12,7 +12,12 @@ feature_engine = module.exports =
     feature_engine.features[name] = func 
 
 
-  create: (resolution) -> 
+  create: (resolution) ->
+    global.feature_cache = 
+      price: {}
+      volume: {}
+      min_price: {}
+      max_price: {}
     if feature_engine.resolutions[resolution]
       engine = feature_engine.resolutions[resolution]
       created = false
@@ -55,9 +60,12 @@ feature_engine = module.exports =
           cache: {}
           next_cache: {}
           price_cache: {}
+          pprice_cache: {}
           velocity_cache: {}
           acceleration_cache: {}
           volume_cache: {}
+          vvolume_cache: {}
+          min_price_cache: {}
           max_price_cache: {}
           frames: null
           ticks: 0 
@@ -182,6 +190,14 @@ feature_engine = module.exports =
         engine.frames = {}
         engine.enough_trades = enough_trades
 
+        if engine.ticks % 25000 == 0
+          global.feature_cache = 
+            price: {}
+            volume: {}
+            min_price: {}
+            max_price: {}
+          
+
         if !engine.enough_trades 
           log_error true, {message: "not enough trades"}
 
@@ -241,8 +257,11 @@ initialize_feature = (engine, name, func) ->
     weight = args?.weight or 1
     vel_weight = args?.vel_weight or ''
     short_resolution = args?.short_resolution or ''
+    MACD_weight = args?.MACD_weight or ''
+    MACD_feature = args?.MACD_feature or 'price'
+    eval_entry_every_n_seconds = args?.eval_entry_every_n_seconds or ''
 
-    key = "#{right_now - t * resolution}-#{right_now - t2 * resolution}-#{weight}-#{vel_weight}-#{short_resolution}"
+    key = "#{right_now - t * resolution}-#{right_now - t2 * resolution}-#{weight}-#{vel_weight}-#{short_resolution}-#{MACD_weight}-#{eval_entry_every_n_seconds}-#{MACD_feature}"
 
     val = cache[key]
 
@@ -294,19 +313,24 @@ initialize_feature = (engine, name, func) ->
       return null
 
 
+
+
     cache = e.cache[name]
     next_cache = e.next_cache[name]
     resolution = e.resolution
+
 
     t = args?.t or 0
     t2 = args?.t2 or t
     weight = args?.weight or 1
     vel_weight = args?.vel_weight or ''    
     short_resolution = args?.short_resolution or ''
+    MACD_weight = args?.MACD_weight or ''
+    MACD_feature = args?.MACD_feature or 'price'
+    eval_entry_every_n_seconds = args?.eval_entry_every_n_seconds or ''
 
+    key = "#{right_now - t * resolution}-#{right_now - t2 * resolution}-#{weight}-#{vel_weight}-#{short_resolution}-#{MACD_weight}-#{eval_entry_every_n_seconds}-#{MACD_feature}"
 
-
-    key = "#{right_now - t * resolution}-#{right_now - t2 * resolution}-#{weight}-#{vel_weight}-#{short_resolution}"
 
     val = cache[key]
     if !val?

@@ -43,7 +43,7 @@ if resimulate
     c2: 'BTC'
     exchange: exchange
     accounting_currency: accounting_currency
-    simulation_width:  24 * 7 * 24 * 60 * 60 # backtest over 24 week period
+    length:  24 * 7 * 24 * 60 * 60 # backtest over 24 week period
     end:  Date.now() / 1000 - 0 * 7 * 24 * 60 * 60 # ending now
     eval_entry_every_n_seconds: 60
     eval_exit_every_n_seconds: 60

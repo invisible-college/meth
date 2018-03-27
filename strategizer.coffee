@@ -226,12 +226,18 @@ series = module.exports =
 
 
   MACD: (v) -> 
-    dependencies: [[v.resolution, 'MACD_signal',  {weight: v.weight or 1}]
-                   [v.resolution * v.short, 'MACD_signal',  {weight: v.weight or 1}]]
+
+    short_resolution = v.resolution * 60 * 60
+    long_resolution  = v.resolution * v.long * 60 * 60
+    MACD_feature = v.MACD_feature or 'price' 
+
+    MACD_weight = v.MACD_weight or 1 
+    dependencies: [[short_resolution, 'MACD_signal',  {weight: v.weight or 1, MACD_weight, MACD_feature}]
+                   [long_resolution,  'MACD_signal',  {weight: v.weight or 1, MACD_weight, MACD_feature}]]
 
     eval_whether_to_enter_new_position: (args) ->
-      f = @features[v.resolution]
-      MACD = f.MACD {weight: (v.weight or 1), short_resolution: v.resolution * v.short}
+      f = @features[long_resolution]
+      MACD = f.MACD {weight: (v.weight or 1), short_resolution, MACD_weight, eval_entry_every_n_seconds: v.eval_entry_every_n_seconds, MACD_feature}
 
       pos = 
         buy: 
@@ -241,12 +247,18 @@ series = module.exports =
       pos
 
   MACD_signal: (v) -> 
-    dependencies: [[v.resolution, 'MACD_signal',  {weight: v.weight or 1}]
-                   [v.resolution * v.short, 'MACD_signal',  {weight: v.weight or 1}]]
+    short_resolution = v.resolution * 60 * 60
+    long_resolution  = v.resolution * v.long * 60 * 60
+
+    MACD_weight = v.MACD_weight or 1
+    MACD_feature = v.MACD_feature or 'price' 
+
+    dependencies: [[short_resolution, 'MACD_signal',  {weight: v.weight or 1, MACD_weight, MACD_feature}]
+                   [long_resolution,  'MACD_signal',  {weight: v.weight or 1, MACD_weight, MACD_feature}]]
 
     eval_whether_to_enter_new_position: (args) ->
-      f = @features[v.resolution]
-      MACD = f.MACD_signal {weight: (v.weight or 1), short_resolution: v.resolution * v.short}
+      f = @features[long_resolution]
+      MACD = f.MACD_signal {weight: (v.weight or 1), short_resolution, MACD_weight, eval_entry_every_n_seconds: v.eval_entry_every_n_seconds, MACD_feature}
 
       pos = 
         buy: 
@@ -256,7 +268,7 @@ series = module.exports =
       pos
 
   MACD_short: (v) -> 
-    resolution = v.resolution * v.short 
+    resolution = v.resolution * 60 * 60
 
     dependencies: [[resolution, 'price',  {weight: v.weight or 1}]]
 
@@ -272,17 +284,18 @@ series = module.exports =
       pos
 
   MACD_long: (v) -> 
-    dependencies: [[v.resolution, 'price',  {weight: v.weight or 1}]]
+    resolution = v.resolution * v.long * 60 * 60
+    dependencies: [[resolution, 'price',  {weight: v.weight or 1}]]
 
     eval_whether_to_enter_new_position: (args) ->
-      f = @features[v.resolution]
+      f = @features[resolution]
       p = f.price {weight: v.weight or 1}
 
       pos = 
         buy: 
           rate: p
           entry: true 
-        series_data: "long-MACD-#{v.weight or 1}-#{v.resolution}"
+        series_data: "long-MACD-#{v.weight or 1}-#{resolution}"
       pos
 
 
@@ -329,14 +342,17 @@ series = module.exports =
 
 
   ADX: (v) -> 
+    resolution = v.resolution * 60 * 60
+
     dependencies: [
-      [v.resolution, 'ADX', {weight: v.weight}]
-      [v.resolution, 'DM_plus', {weight: v.weight}]
-      [v.resolution, 'DM_minus', {weight: v.weight}]      
+      [resolution, 'ADX', {weight: v.weight}]
+      [resolution, 'DM_plus', {weight: v.weight}]
+      [resolution, 'DM_minus', {weight: v.weight}]      
     ]
 
+
     eval_whether_to_enter_new_position: (args) -> 
-      f = @features[v.resolution]
+      f = @features[resolution]
 
       ADX = f.ADX {weight: v.weight, t: 0}
 
@@ -359,7 +375,7 @@ series = module.exports =
           buy: 
             rate: ADX
             entry: true 
-          series_data: "ADX-#{100 * v.weight}-#{v.resolution}"
+          series_data: "ADX-#{100 * v.weight}-#{resolution}"
         pos
 
 

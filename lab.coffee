@@ -21,7 +21,7 @@ simulate = (ts, callback) ->
   ts = Math.floor(ts)
   time = from_cache('time')
   extend time, 
-    earliest: ts - config.simulation_width
+    earliest: ts - config.length
     latest: ts
   save time
 
@@ -49,9 +49,9 @@ simulate = (ts, callback) ->
 
 
   price_data = fetch('price_data')
-  start = ts - config.simulation_width - history.longest_requested_history
+  start = ts - config.length - history.longest_requested_history
 
-  tick.time = ts - config.simulation_width
+  tick.time = ts - config.length
   tick.start = start 
 
   #start_idx = history.trades.length - 1
@@ -173,17 +173,12 @@ simulate = (ts, callback) ->
     save balance
     for name in (get_all_actors() or [])
       d = from_cache name
-      for pos in (d.positions or [])
-        delete pos.last_exit if pos.last_exit
-        delete pos.original_exit if pos.original_exit
       save d
     console.timeEnd('saving db')
 
     console.log "\nDone simulating! That took #{(Date.now() - started_at) / 1000} seconds" if config.log
-    console.log config if !config.multiple_times
+    console.log config if config.persist
     console.log "PORT: #{bus.port}"
-    if config.multiple_times
-      reset() 
     callback?()
 
   one_tick = ->
@@ -253,14 +248,14 @@ simulate = (ts, callback) ->
 
     ####################
     #### Efficiency measures
-    xxxx = Date.now()
-    # if ticks % Math.round(50000 / (pusher.tick_interval / 60)) == 1 && global.gc
-    #   global.gc()
+    # xxxx = Date.now()
+    if ticks % 50000 == 1
+      global.gc?()
 
     if ticks % 100 == 99
       purge_position_status()
 
-    t_.gc += Date.now() - xxxx
+    # t_.gc += Date.now() - xxxx
     ####################
 
     #####################
@@ -313,7 +308,7 @@ update_balance = (balance, dealers_with_open) ->
       
       if buy
         # used or reserved for buying trade.amount eth
-        for_purchase = if buy.market then buy.to_fill else buy.to_fill * buy.rate
+        for_purchase = if buy.flags?.market then buy.to_fill else buy.to_fill * buy.rate
         dbtc_on_order += for_purchase
         dbtc -= for_purchase
 
@@ -440,7 +435,7 @@ update_position_status = (end_idx, balance, dealers_with_open) ->
             amt = fill.amount 
             rate = fill.rate
 
-            if trade.market && trade.type == 'buy'
+            if trade.flags?.market && trade.type == 'buy'
               to_fill = trade.to_fill - (trade.fill_to or 0)
 
               done = amt * rate >= to_fill
@@ -450,12 +445,13 @@ update_position_status = (end_idx, balance, dealers_with_open) ->
 
             else 
               to_fill = trade.to_fill - (trade.fill_to or 0)
-              done = fill.amount >= to_fill || trade.market
+              done = fill.amount >= to_fill || trade.flags?.market
               fill.amount = if !done then amt        else to_fill 
               fill.total  = if !done then amt * rate else to_fill * rate
               trade.to_fill -= fill.amount 
 
             fill.type = trade.type
+            fill.slippage = fill.amount * Math.abs(fill.rate - trade.original_rate) / trade.original_rate
             trade.fills.push fill
             filled += 1
 
@@ -559,7 +555,7 @@ fill_order = (my_trade, end_idx, status) ->
   is_sell = my_trade.type == 'sell'
   my_created = my_trade.created 
   order_placement_lag = config.order_placement_lag  
-  is_market = my_trade.market
+  is_market = my_trade.flags?.market
 
   if status.idx
     start_at = status.idx
@@ -585,7 +581,7 @@ fill_order = (my_trade, end_idx, status) ->
         init = true 
 
     if !status.became_maker
-      status.became_maker = trade.date - (my_created + order_placement_lag) > 1 * 60 || (is_sell && trade.rate < my_rate) || (!is_sell && trade.rate > my_rate)
+      status.became_maker = trade.date - (my_created + order_placement_lag) > 1 * 60 || (is_sell && trade.rate <= my_rate) || (!is_sell && trade.rate >= my_rate)
         
 
     if (!is_sell && trade.rate <= my_rate) || \
@@ -631,7 +627,7 @@ store_analysis = ->
   if !fs.existsSync 'analyze'
     fs.mkdirSync 'analyze'  
 
-  dir = "analyze/#{config.end - config.simulation_width}-#{config.end}"
+  dir = "analyze/#{config.end - config.length}-#{config.end}"
 
   if !fs.existsSync dir  
     fs.mkdirSync dir  
@@ -730,7 +726,7 @@ log_results = ->
 
   KPI (all_stats) -> 
 
-    row = [config.name, config.c1, config.c2, config.exchange, config.end - config.simulation_width, config.end]
+    row = [config.name, config.c1, config.c2, config.exchange, config.end - config.length, config.end]
 
     for measure, calc of dealer_measures(all_stats)
       row.push calc('all')
@@ -781,55 +777,6 @@ reset = ->
 
 lab = module.exports = 
 
-  experiment_multiple_times: (conf, callback) -> 
-    conf.auto_shorten_time = false 
-    conf.multiple_times = true
-
-    conf.stop ?= Math.floor Date.now() / 1000
-
-    runs = []
-
-    end = conf.stop
-    length = conf.length
-
-    earliest = exchange.get_earliest_trade(conf)
-
-    while end - length >= conf.begin
-
-      if earliest <= end - length
-
-        runs.push 
-          end: end
-          simulation_width: length
-          name: "l#{((now() - end) / (7 * 24 * 60 * 60)).toFixed(0)} weeks ago #{conf.exchange} #{conf.c1}x#{conf.c2} #{end}"
-
-      end -= conf.offset
-
-    next = ->
-      if runs.length == 0 
-        callback?()
-        # process.exit()
-      else 
-        time = runs.shift()
-        
-        extend conf, time
-        
-        already_run = false 
-
-        fname = "logs/#{conf.log_results or config.log_results}.txt"        
-        if fs.existsSync(fname)
-          from_file = fs.readFileSync(fname, 'utf8')
-          already_run = !!from_file.match(conf.name)
-
-        if already_run
-          console.log "Skipping because it has already run: #{time.name}"
-          next()
-        else 
-          console.log "\n********\nNext experiment! #{time.name}\n#{runs.length} remaining after this.\n\n"
-          lab.experiment conf, next
-
-    next()
-
   experiment: (conf, callback) -> 
 
 
@@ -842,7 +789,7 @@ lab = module.exports =
       eval_entry_every_n_seconds: 60
       eval_exit_every_n_seconds: 60
       eval_unfilled_every_n_seconds: 60
-      simulation_width: 12 * 24 * 60 * 60
+      length: 12 * 24 * 60 * 60
       c1: 'BTC'
       c2: 'ETH'
       accounting_currency: 'USDT'
@@ -871,7 +818,6 @@ lab = module.exports =
     # return
 
 
-
     pusher.init
       history: history 
       clear_all_positions: true 
@@ -880,15 +826,15 @@ lab = module.exports =
       message: 'Longest requested history is NaN. Perhaps you haven\'t registered any dealers'
 
     # console.log 'longest requested history:', history.longest_requested_history
-    history_width = history.longest_requested_history + config.simulation_width + 24 * 60 * 60
+    history_width = history.longest_requested_history + config.length + 24 * 60 * 60
 
     earliest_trade_for_pair = exchange.get_earliest_trade {only_high_volume: config.only_high_volume, exchange: config.exchange, c1: config.c1, c2: config.c2, accounting_currency: config.accounting_currency}
 
     if ts > earliest_trade_for_pair
       if config.auto_shorten_time && ts - history_width < earliest_trade_for_pair
         shrink_by = earliest_trade_for_pair - (ts - history_width) + 24 * 60 * 60
-        config.simulation_width -= shrink_by
-        history_width = history.longest_requested_history + config.simulation_width + 24 * 60 * 60
+        config.length -= shrink_by
+        history_width = history.longest_requested_history + config.length + 24 * 60 * 60
         console.log "Shortened simulation", {shrink_by, end: ts, start: ts - history_width, history_width, earliest_trade_for_pair}
 
 

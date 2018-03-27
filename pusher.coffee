@@ -1,6 +1,7 @@
 require './shared'
 
 feature_engine = require './feature_engine'
+exchange = require './exchange'
 
 global.dealers = {}
 global.open_positions = {}
@@ -46,7 +47,7 @@ global.log_error = (halt, data) ->
   if halt 
     setTimeout ->
       console.assert false, data
-    , 10
+    , 100
   else 
     console.error data
 
@@ -250,6 +251,14 @@ find_opportunities = (balance) ->
 
     if tick.time - pusher.last_checked_new_position[name] < eval_entry_every_n_seconds
       continue 
+
+    if dealer_data.locked 
+      locked_for = tick.time - dealer_data.locked
+      console.log "Skipping #{name} because it is locked (locked for #{locked_for}s)"
+      if locked_for > 10 * 60 && locked_for < 20 * 60
+        log_error false, {message: "#{name} locked an excessive period of time.", dealer_data, locked_for}
+      continue
+
     pusher.last_checked_new_position[name] = tick.time
 
     
@@ -324,6 +333,10 @@ find_opportunities = (balance) ->
           else 
             opportunity.required_c1 = (opportunity.amount or pos.entry.amount) * opportunity.rate
 
+          if opportunity.amount < exchange.minimum_order_size()
+            log_error false, {message: "Can't exit because amount is less than minimum", opportunity, pos, balance, entry: pos.entry, exit: pos.exit, entry_fills: pos.entry?.fills, exit_fills: pos.exit?.fills}
+            continue
+
         opportunity.pos = pos 
         opportunities.push opportunity
 
@@ -346,11 +359,12 @@ find_opportunities = (balance) ->
     pusher.last_checked_unfilled[name] = tick.time
 
 
-    # see if any open positions want to exit
     yyy = Date.now()      
 
-
-    for pos in open_positions[name] when (pos.entry && !pos.entry.closed) || (pos.exit && ((!pos.exit.fill_to? && !pos.exit.closed) || (pos.exit.fill_to? && pos.exit.fill_to < pos.exit.to_fill)    ))
+    for pos in open_positions[name] when (pos.entry && !pos.entry.closed) || \
+                                         (pos.exit && \
+                                            ((!pos.exit.fill_to? && !pos.exit.closed) || \
+                                              (pos.exit.fill_to? &&  pos.exit.fill_to < pos.exit.to_fill) ))
       opportunity = dealer.eval_unfilled_trades
         position: pos 
         dealer: name
@@ -401,10 +415,10 @@ execute_opportunities = (opportunities) ->
         take_position pos
 
       when 'update_exit'
-        update_exit {pos, opportunity}
+        update_trade {pos, trade: pos.exit, opportunity}
 
       when 'update_entry'
-        update_entry {pos, opportunity}
+        update_trade {pos, trade: pos.entry, opportunity}
 
 
 
@@ -486,7 +500,7 @@ create_position = (spec, dealer) ->
 
   if buy
     buy.type = 'buy'
-    buy.to_fill ||= if buy.market then buy.amount * buy.rate else buy.amount
+    buy.to_fill ||= if buy.flags?.market then buy.amount * buy.rate else buy.amount
   if sell 
     sell.type = 'sell'
     sell.to_fill ||= sell.amount
@@ -516,8 +530,7 @@ exit_position = ({pos, opportunity}) ->
     return
 
   rate = opportunity.rate 
-  market_trade = opportunity.market 
-  post_only = opportunity.post_only
+  market_trade = opportunity.flags?.market 
   amount = opportunity.amount or pos.entry.amount
   type = if pos.entry.type == 'buy' then 'sell' else 'buy'
 
@@ -527,8 +540,7 @@ exit_position = ({pos, opportunity}) ->
     rate: rate
     to_fill: if market_trade && type == 'buy' then amount * rate else amount
     fill_to: opportunity.fill_to
-    market: if market_trade then true 
-    post_only: if post_only then true 
+    flags: if opportunity.flags? then opportunity.flags
 
   if config.exchange == 'gdax' 
     for trade in [pos.exit.rate] when trade
@@ -549,8 +561,13 @@ exit_position = ({pos, opportunity}) ->
 take_position = (pos) -> 
 
   if pusher.take_position && !pos.series_data
+    dealer = from_cache(pos.dealer)
+    dealer.locked = tick.time 
+    bus.save dealer
     pusher.take_position pos, (error) -> 
+      dealer.locked = false
       took_position pos, error
+      bus.save dealer      
   else 
     took_position pos
 
@@ -572,11 +589,13 @@ took_position = (pos, error) ->
     if !pos.exit && !pos.entry
       return destroy_position pos 
     else 
-      save pos
+      bus.save pos
 
   for trade in [pos.entry, pos.exit] when trade && !trade.created
-    trade.created = tick.time
-    trade.fills = []
+    trade.created ?= tick.time
+    trade.fills ?= []
+    trade.original_rate ?= trade.rate
+    trade.original_amt ?= trade.amount
 
   if !from_cache(pos.dealer).positions
     throw "#{pos.dealer} not properly initialized with positions"
@@ -587,19 +606,11 @@ took_position = (pos, error) ->
       open_positions[pos.dealer].push pos
 
 
-update_exit = ({pos, opportunity}) ->
+update_trade = ({pos, trade, opportunity}) ->
   rate = opportunity.rate
 
-  if pos.exit.closed && !pos.entry.closed 
-    console.assert !pos.exit.fill_to?, {entry: pos.entry, exit: pos.exit}
-    p = pos.exit 
-    pos.exit = pos.entry 
-    pos.entry = p 
-
-
-
   if opportunity.fill_to? 
-    pos.exit.fill_to = opportunity.fill_to 
+    trade.fill_to = opportunity.fill_to 
 
   if config.exchange == 'gdax'
     if config.c1 == 'USD' # can't have fractions of cents (at least on GDAX!)
@@ -608,66 +619,63 @@ update_exit = ({pos, opportunity}) ->
       rate = parseFloat((Math.round(rate * 1000000) / 1000000).toFixed(6))
 
   if isNaN(rate) || !rate || rate == 0
-
     return log_error true, 
-      message: 'Bad rate for moving exit!',
+      message: 'Bad rate for updating trade!',
       rate: rate 
       pos: pos 
 
-  if !pos.entry 
+  if trade.to_fill == 0
     return log_error true, 
-      message: 'position can\'t be exited because entry is undefined'
-      pos: pos
-      rate: rate
+      message: 'trying to move a trade that should already be closed'
+      pos: pos 
+      trade: trade 
+      fills: trade.fills
 
-  if pos.exit.to_fill == 0
-    return log_error true, 
-      message: 'trying to move an exit on a trade that should already be closed'
-      trade: pos.exit 
-      fills: pos.exit.fills
 
-  if pos.exit.market 
+  if trade.flags?.market 
     return log_error true, 
       message: 'trying to move a market exit'
-      trade: pos.exit 
+      trade: trade 
 
-  last_exit = pos.exit.rate 
 
-  if pos.exit.type == 'buy'
+
+  if trade.type == 'buy'
     # we need to adjust the *amount* we're buying because our buying power has changed
     amt_purchased = 0 
     total_sold = 0 
-    for f in (pos.exit.fills or [])
+    for f in (trade.fills or [])
       amt_purchased += f.amount
       total_sold += f.total
 
-    amt_remaining = pos.exit.amount - amt_purchased    
-    total_remaining = amt_remaining * pos.exit.rate 
+    amt_remaining = (trade.original_amount or trade.amount) - amt_purchased    
+    total_remaining = amt_remaining * (trade.original_rate or trade.rate)
     new_amount = total_remaining / rate 
   else 
-    new_amount = pos.exit.to_fill
+    new_amount = trade.to_fill
 
 
   if config.exchange == 'gdax' 
     new_amount = parseFloat((Math.floor(new_amount * 1000000) / 1000000).toFixed(6))
 
+  trade.rate = rate 
+  if trade.type == 'buy'
+    trade.amount = new_amount + amt_purchased
+    trade.to_fill = new_amount 
+
 
   cb = (error) -> 
     if !error 
-      pos.last_exit = last_exit 
-      if !pos.reset
-        pos.original_exit = last_exit
-        pos.reset = tick.time
-
-      pos.exit.created = tick.time
-      pos.exit.rate = rate
-      if pos.exit.type == 'buy'
-        pos.exit.amount = new_amount + amt_purchased
-        pos.exit.to_fill = new_amount 
-
+      trade.reset ?= tick.time
+      trade.created = tick.time # I don't like this...
+      trade.resets ?= 0
+      trade.resets += 1
       set_expected_profit pos
 
   if pusher.update_trade
+    dealer = from_cache(pos.dealer)
+    dealer.locked = tick.time 
+    bus.save dealer
+
     amt = new_amount
     if opportunity.fill_to?
       amt -= opportunity.fill_to
@@ -677,94 +685,28 @@ update_exit = ({pos, opportunity}) ->
 
     pusher.update_trade 
       pos: pos
-      trade: pos.exit
+      trade: trade
       rate: rate 
       amount: amt
-    , cb
+    , (error) -> 
+      dealer.locked = false 
+      bus.save dealer
+      cb error 
   else 
     cb()
-
-
-# TODO: merge with update_exit
-update_entry = ({pos, opportunity}) ->
-  rate = opportunity.rate
-
-  if config.exchange == 'gdax'
-    if config.c1 == 'USD' # can't have fractions of cents (at least on GDAX!)
-      rate = parseFloat((Math.round(rate * 100) / 100).toFixed(2))
-    else 
-      rate = parseFloat((Math.round(rate * 1000000) / 1000000).toFixed(6))
-
-  if isNaN(rate) || !rate || rate == 0
-    return log_error true, 
-      message: 'Bad rate for moving exit!',
-      rate: rate 
-      pos: pos 
-
-  if pos.entry.to_fill == 0
-    return log_error true, 
-      message: 'trying to move an entry on a trade that should already be closed'
-      trade: pos.entry 
-      fills: pos.entry.fills
-    return
-
-  if pos.entry.market 
-    return log_error true, 
-      message: 'trying to move a market trade'
-      trade: pos.entry 
-
-  last_exit = pos.entry.rate 
-
-  
-  if pos.entry.type == 'buy'
-    # we need to adjust the *amount* we're buying because our buying power has changed
-    amt_purchased = 0 
-    total_sold = 0 
-    for f in (pos.entry.fills or [])
-      amt_purchased += f.amount
-      total_sold += f.total
-
-    amt_remaining = pos.entry.amount - amt_purchased    
-    total_remaining = amt_remaining * pos.entry.rate 
-    new_amount = total_remaining / rate 
-  else 
-    new_amount = pos.entry.to_fill
-
-
-  if config.exchange == 'gdax' 
-    new_amount = parseFloat((Math.floor(new_amount * 1000000) / 1000000).toFixed(6))
-
-
-  cb = (error) -> 
-    if !error 
-      if !pos.entry.reset
-        pos.entry.reset = tick.time
-
-      pos.entry.created = tick.time
-      pos.entry.rate = rate
-      if pos.entry.type == 'buy'
-        pos.entry.amount = new_amount + amt_purchased
-        pos.entry.to_fill = new_amount 
-
-      set_expected_profit pos
-
-  if pusher.update_trade
-    pusher.update_trade 
-      pos: pos
-      trade: pos.entry
-      rate: rate 
-      amount: new_amount
-    , cb
-  else 
-    cb()
-
 
 
 
 
 cancel_unfilled = (pos) ->
   if pusher.cancel_unfilled 
+    dealer = from_cache(pos.dealer)
+    dealer.locked = tick.time 
+    bus.save dealer
+
     pusher.cancel_unfilled pos, ->
+      dealer.locked = false 
+      bus.save dealer
       canceled_unfilled pos
   else 
     canceled_unfilled pos
@@ -774,10 +716,8 @@ cancel_unfilled = (pos) ->
 canceled_unfilled = (pos) ->
   for trade in ['exit', 'entry'] when !pos[trade]?.closed
     if pos[trade] && !pos[trade].current_order
-      pos.last_exit = pos[trade].rate
-      pos.original_exit = pos[trade].rate if !pos.original_exit?
       pos.expected_profit = undefined if pos.expected_profit
-      pos.reset = tick.time if !pos.reset
+      pos.reset ?= tick.time
       if pos[trade].fills.length == 0 
         pos[trade] = undefined
 
@@ -872,7 +812,7 @@ is_valid_position = (pos) ->
     return false if !LOG_REASONS
     failure_reasons.push "Can't have a zero rate"
 
-  if entry.amount <= 0 || exit?.amount <= 0 
+  if entry.amount <= exchange.minimum_order_size() || exit?.amount <= exchange.minimum_order_size()
     return false if !LOG_REASONS
     failure_reasons.push "Can't have a negative amount"
 

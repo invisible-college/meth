@@ -86,7 +86,12 @@ module.exports = history =
               break if cnt > price_data.c1.length + price_data.c2.length + price_data.c1xc2.length # there is a bug where infinite loop possible
               cnt += 1
 
-            console.error equal_lengths(), msg: "patching failed", price_data: price_data
+            console.error equal_lengths(), 
+              msg: "patching failed"
+              c1_len: price_data.c1?.length
+              c2_len: price_data.c2?.length
+              c1xc2_len: price_data.c1xc2?.length
+              # price_data: price_data
 
       # second we'll look to see if the candles are equally spaced by the desired granularity
       for pair, data of price_data when pair != 'key' && pair != 'granularity'

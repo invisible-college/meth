@@ -36,6 +36,13 @@ module.exports = poloniex =
     console.assert config.c1 of mins 
     mins[config.c1]
 
+  minimum_rate_precision: -> 
+    mins = 
+      BTC: 8
+
+    console.assert config.c1 of mins 
+    mins[config.c1]
+
 
   get_earliest_trade: (opts) ->
 
@@ -343,7 +350,7 @@ module.exports = poloniex =
           maker_fee: parseFloat body.makerFee
 
   place_order: (opts, callback) -> 
-    if opts.market 
+    if opts.flags?.market 
       return poloniex.market_order(opts, callback)
 
     poloniex.query_trading_api
@@ -419,13 +426,13 @@ module.exports = poloniex =
 
 
   move_order: (opts, callback) -> 
-    console.assert !opts.market && opts.order_id && opts.amount > 0 && opts.rate > 0
+    console.assert !opts.flags?.market && opts.order_id && opts.amount > 0 && opts.rate > 0
 
     poloniex.query_trading_api
       command: 'moveOrder'
       orderNumber: opts.order_id
       rate: opts.rate
-      amount: opts.amount
+      # amount: opts.amount # can lead to over buying/selling if a fill happens between the move order and pusher
     , (err, resp, body) ->
 
       if body?.error == 'Invalid order number, or you are not the person who placed the order.'

@@ -19,7 +19,8 @@ module.exports = exchange =
     mins[currency]
 
   minimum_rate_diff: -> exchange[config.exchange].minimum_rate_diff()
-
+  minimum_rate_precision: -> exchange[config.exchange].minimum_rate_precision()
+  
   # opts: 
   # c1, c2
   get_earliest_trade: (opts) ->
