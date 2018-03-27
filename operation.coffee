@@ -47,7 +47,7 @@ one_tick = ->
   has_unfilled = false 
   for dealer,positions of open_positions when positions.length > 0
     for pos in positions 
-      if (pos.entry && !pos.entry.closed) || (pos.exit && ((!pos.exit.fill_to && !pos.exit.closed) || (pos.exit.fill_to && pos.exit.fill_to < pos.exit.to_fill)    ))
+      if (pos.entry && !pos.entry.closed) || (pos.exit && !pos.exit.closed) 
         has_unfilled = true 
         break 
     break if has_unfilled
@@ -264,8 +264,6 @@ update_position_status = (callback) ->
                 t.fee = fees
                 t.to_fill = 0 
                 t.closed = last
-                if t.fill_to?
-                  delete t.fill_to
 
           if pos.entry?.closed && pos.exit?.closed
             buy = if pos.entry.type == 'buy' then pos.entry else pos.exit
@@ -314,7 +312,7 @@ take_position = (pos, callback) ->
 
   error = false
   for trade, idx in trades
-    amount =  trade.to_fill - (trade.fill_to or 0)
+    amount =  trade.to_fill - 0
 
     if amount < exchange.minimum_order_size()
       log_error true, 

@@ -188,7 +188,7 @@ simulate = (ts, callback) ->
     has_unfilled = false 
     for dealer,positions of open_positions when positions.length > 0
       for pos in positions 
-        if (pos.entry && !pos.entry.closed) || (pos.exit && ((!pos.exit.fill_to && !pos.exit.closed) || (pos.exit.fill_to && pos.exit.fill_to < pos.exit.to_fill)    ))
+        if (pos.entry && !pos.entry.closed) || (pos.exit && !pos.exit.closed)
           has_unfilled = true 
           break 
       break if has_unfilled
@@ -421,7 +421,7 @@ update_position_status = (end_idx, balance, dealers_with_open) ->
 
         status = global.position_status[key]
 
-        if trade.to_fill > (trade.fill_to or 0) && (!status? || end_idx < status.idx + 100 )
+        if trade.to_fill > 0 && (!status? || end_idx < status.idx + 100 )
           status = global.position_status[key] = fill_order trade, end_idx, status
           # console.log '\nFILLLLLLLL\n', key, end_idx, status?.idx, status?.fills?.length
 
@@ -436,7 +436,7 @@ update_position_status = (end_idx, balance, dealers_with_open) ->
             rate = fill.rate
 
             if trade.flags?.market && trade.type == 'buy'
-              to_fill = trade.to_fill - (trade.fill_to or 0)
+              to_fill = trade.to_fill - 0
 
               done = amt * rate >= to_fill
               fill.total  = if !done then amt * rate else to_fill
@@ -444,7 +444,7 @@ update_position_status = (end_idx, balance, dealers_with_open) ->
               trade.to_fill -= fill.total 
 
             else 
-              to_fill = trade.to_fill - (trade.fill_to or 0)
+              to_fill = trade.to_fill - 0
               done = fill.amount >= to_fill || trade.flags?.market
               fill.amount = if !done then amt        else to_fill 
               fill.total  = if !done then amt * rate else to_fill * rate
@@ -466,8 +466,6 @@ update_position_status = (end_idx, balance, dealers_with_open) ->
 
         if trade.to_fill == 0
           trade.closed = trade.fills[trade.fills.length - 1].date
-          if trade.fill_to?
-            delete trade.fill_to
           global.position_status[key] = undefined
 
       if (pos.entry?.closed && pos.exit?.closed) || (dealers[dealer].never_exits && pos.entry?.closed)
@@ -562,7 +560,7 @@ fill_order = (my_trade, end_idx, status) ->
   else 
     start_at = end_idx
 
-  to_fill = my_trade.to_fill - (my_trade.fill_to or 0)
+  to_fill = my_trade.to_fill
 
   console.assert to_fill > 0 
 

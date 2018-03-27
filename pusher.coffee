@@ -318,7 +318,7 @@ find_opportunities = (balance) ->
     # see if any open positions want to exit
     yyy = Date.now()      
 
-    for pos in open_positions[name] when !pos.series_data && (!pos.exit || (pos.exit.fill_to? && pos.exit.fill_to >= pos.exit.to_fill ))
+    for pos in open_positions[name] when !pos.series_data && !pos.exit 
 
       opportunity = dealer.eval_whether_to_exit_position
         position: pos 
@@ -362,9 +362,8 @@ find_opportunities = (balance) ->
     yyy = Date.now()      
 
     for pos in open_positions[name] when (pos.entry && !pos.entry.closed) || \
-                                         (pos.exit && \
-                                            ((!pos.exit.fill_to? && !pos.exit.closed) || \
-                                              (pos.exit.fill_to? &&  pos.exit.fill_to < pos.exit.to_fill) ))
+                                         (pos.exit  && !pos.exit.closed)
+
       opportunity = dealer.eval_unfilled_trades
         position: pos 
         dealer: name
@@ -539,7 +538,6 @@ exit_position = ({pos, opportunity}) ->
     type: type
     rate: rate
     to_fill: if market_trade && type == 'buy' then amount * rate else amount
-    fill_to: opportunity.fill_to
     flags: if opportunity.flags? then opportunity.flags
 
   if config.exchange == 'gdax' 
@@ -609,9 +607,6 @@ took_position = (pos, error) ->
 update_trade = ({pos, trade, opportunity}) ->
   rate = opportunity.rate
 
-  if opportunity.fill_to? 
-    trade.fill_to = opportunity.fill_to 
-
   if config.exchange == 'gdax'
     if config.c1 == 'USD' # can't have fractions of cents (at least on GDAX!)
       rate = parseFloat((Math.round(rate * 100) / 100).toFixed(2))
@@ -676,18 +671,11 @@ update_trade = ({pos, trade, opportunity}) ->
     dealer.locked = tick.time 
     bus.save dealer
 
-    amt = new_amount
-    if opportunity.fill_to?
-      amt -= opportunity.fill_to
-      console.assert amt > 0
-      if config.exchange == 'gdax' 
-        amt = parseFloat((Math.floor(amt * 1000000) / 1000000).toFixed(6))
-
     pusher.update_trade 
       pos: pos
       trade: trade
       rate: rate 
-      amount: amt
+      amount: new_amount
     , (error) -> 
       dealer.locked = false 
       bus.save dealer
