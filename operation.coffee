@@ -26,7 +26,8 @@ global.tick =
 
 
 
-
+process.on 'SIGINT', ->
+  bus.save {key: 'time_to_die', now: true}
 
 
 log_tick = -> 
@@ -68,7 +69,7 @@ one_tick = ->
 
 
   if config.log_level > 0
-    console.log "TICKING @ #{tick.time}! #{all_lag.length} queries with #{Math.average(all_lag)} avg lag"
+    console.log "TICKING @ #{tick.time}! #{all_lag.length} messages with #{Math.average(all_lag)} avg lag"
   # tick.lock = true
 
   cb = ->
@@ -120,9 +121,8 @@ one_tick = ->
               f.slippage = stats.all.slippage
               bus.save f
 
-            if config.reset_every && !unfilled_orders() && (tick.time - (tick.started or 0) > config.reset_every * 60 * 60 || global.restart_when_possible)
+            if config.reset_every && !unfilled_orders() && (  (tick.time - (tick.started or 0) > config.reset_every * 60 * 60) || global.restart_when_possible)
               
-
               setTimeout ->
 
                 # write feature cache to disk
@@ -142,7 +142,7 @@ one_tick = ->
                     console.error {message: "Want to reset, but at least one dealer is locked", time}
                 else 
                   if config.log_level > 0
-                    console.log 'Due for a reset. Assuming a monitoring process that will restart the app'
+                    console.log 'Due for a reset. Assuming a monitoring process that will restart the app', {reset_every: config.reset_every, time: tick.time, started: tick.started, diff: tick.time - tick.started, should: (tick.time - (tick.started or 0) > config.reset_every * 60 * 60)}
                   
                   bus.save {key: 'time_to_die', now: true}
 
@@ -162,6 +162,8 @@ one_tick = ->
   history.load_price_data (time.earliest or tick.started) - tick.history_to_keep, now(), cb, cb
  
  
+
+
 
 
 ######
@@ -716,7 +718,7 @@ update_account_balances = (callback) ->
               else 
                 fills_out.push "#{pos.key}\t#{trade.entry or false}\t#{trade.created}\t#{fill.order_id}\t-#{fill.total}\t#{fill.amount}\t#{fill.fee}"
 
-        if pos.last_error != 'Negative balance'
+        if pos.last_error != 'Negative balance' && !config.disabled
           log_error config.simulation,
             message: 'negative balance!?!'
             dealer: dealer
@@ -736,24 +738,24 @@ update_account_balances = (callback) ->
     sheet.on_order.c1 = btc_on_order
     sheet.on_order.c2 = eth_on_order
 
+    if !config.disabled 
+      if sheet.on_order.c1 != btc_on_order || sheet.on_order.c2 != eth_on_order
+        log_error true, 
+          message: "Order amounts differ"
+          c1_on_order: btc_on_order
+          c2_on_order: eth_on_order
+          on_order: sheet.on_order
 
-    if sheet.on_order.c1 != btc_on_order || sheet.on_order.c2 != eth_on_order
-      log_error true, 
-        message: "Order amounts differ"
-        c1_on_order: btc_on_order
-        c2_on_order: eth_on_order
-        on_order: sheet.on_order
 
-
-    if sheet.deposits.c1 + btc > x_sheet.balances.c1 || sheet.deposits.c2 + eth > x_sheet.balances.c2
-      log_error true, 
-        message: "Dealers have more balance than available"
-        c1: btc
-        c2: eth
-        diff_c1: x_sheet.balances.c1 - (sheet.deposits.c1 + btc)
-        diff_c2: x_sheet.balances.c2 - (sheet.deposits.c2 + eth)
-        deposits: sheet.deposits
-        exchange_balances: x_sheet.balances
+      if sheet.deposits.c1 + btc > x_sheet.balances.c1 || sheet.deposits.c2 + eth > x_sheet.balances.c2
+        log_error true, 
+          message: "Dealers have more balance than available"
+          c1: btc
+          c2: eth
+          diff_c1: x_sheet.balances.c1 - (sheet.deposits.c1 + btc)
+          diff_c2: x_sheet.balances.c2 - (sheet.deposits.c2 + eth)
+          deposits: sheet.deposits
+          exchange_balances: x_sheet.balances
 
 
     bus.save sheet
@@ -852,8 +854,13 @@ operation = module.exports =
       if o.now
         setTimeout process.exit, 1
 
-    bus('time_to_die').on_save = (o) ->
+    bus('die die die').on_save = (o) ->
       global.restart_when_possible = true
+
+
+    if config.disabled 
+      console.log "This operation is abandoned. Nothing to see here."
+      return
 
     pusher.init {history, take_position, cancel_unfilled, update_trade}
 
@@ -867,10 +874,6 @@ operation = module.exports =
 
     tick.started = ts = now()
     tick.history_to_keep = history_width
-
-    time.last_reset = tick.started
-    bus.save time
-
 
     for name in get_all_actors()
       dealer = from_cache name 

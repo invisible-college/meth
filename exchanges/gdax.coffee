@@ -1065,18 +1065,20 @@ module.exports = gdax =
               trade.current_order = null 
               bus.save pos
 
+
             gdax.get_order order_id, (order_data) -> 
               # sometimes GDAX apparently doesn't return fills promptly, so we try to cross check 
               # it with the result of get_order, which has a "filled_size" property
               filled_size_from_order = if order_data.error == 'Not found' then 0 else order_data.filled_size
-
+              attempts = 0 
               fills_callback = (fills) -> 
                 filled_size = 0
                 for new_fill in fills
                   filled_size += new_fill.amount 
 
-                if filled_size < filled_size_from_order
-                  log_error false, 
+
+                if Math.abs(filled_size - filled_size_from_order) > .001 * Math.abs(filled_size + filled_size_from_order)
+                  console.error  
                     message: "Filled size from getFills does not match Filled Size from getOrder "
                     order_id: order_id 
                     filled_size: filled_size
@@ -1084,9 +1086,25 @@ module.exports = gdax =
                     order_data: order_data
                     fills: fills 
 
-                  # try again...
-                  return gdax.get_my_fills {order_id: order_id}, fills_callback
+                  # try again
+                  if attempts < 50
+                    setTimeout -> 
+                      attempts += 1
+                      gdax.get_order order_id, (order_data) -> 
+                        filled_size_from_order = if order_data.error == 'Not found' then 0 else order_data.filled_size
+                        gdax.get_my_fills {order_id}, fills_callback
+                    , 1000
+                  else 
+                    log_error false, 
+                      message: "Filled size from getFills does not match Filled Size from getOrder. Giving up."
+                      order_id: order_id 
+                      filled_size: filled_size
+                      filled_size_from_order: filled_size_from_order
+                      order_data: order_data
+                      fills: fills 
+                    finished_callback()
 
+                  return 
 
                 trade = refresh pos, trade
 
@@ -1152,7 +1170,7 @@ module.exports = gdax =
                     updated_callback result
               
 
-              gdax.get_my_fills {order_id: order_id}, fills_callback
+              gdax.get_my_fills {order_id}, fills_callback
 
 
 
