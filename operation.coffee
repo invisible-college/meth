@@ -14,12 +14,13 @@ global.lag_logger = (lag) ->
   laggy = all_lag.length == 0 || Math.max(lag) > LAGGY_THRESHOLD
 
 
+
 #########################
 # Main event loop
 
 global.tick = 
   time: null 
-  lock: false
+  # lock: false
 
 
 
@@ -35,6 +36,15 @@ log_tick = ->
     latest: tick.time
   bus.save time
 
+
+unfilled_orders = -> 
+  for dealer,positions of open_positions when positions.length > 0
+    for pos in positions 
+      if (pos.entry && !pos.entry.closed) || (pos.exit && !pos.exit.closed) 
+        return true 
+  return false
+
+
 one_tick = ->
   # if tick.lock
   #   console.log "Skipping tick because it is still locked"
@@ -44,13 +54,7 @@ one_tick = ->
   time = fetch 'time'  
   
   # check if we need to tick
-  has_unfilled = false 
-  for dealer,positions of open_positions when positions.length > 0
-    for pos in positions 
-      if (pos.entry && !pos.entry.closed) || (pos.exit && !pos.exit.closed) 
-        has_unfilled = true 
-        break 
-    break if has_unfilled
+  has_unfilled = unfilled_orders() 
 
   inc = if has_unfilled 
           pusher.tick_interval
@@ -62,27 +66,32 @@ one_tick = ->
   if !needs_to_run && time.earliest?
     return
 
-  if config.disabled
-    log_tick()
-    return
 
-
-  if !has_unfilled && config.reset_every && tick.time - (time.last_reset or 0) > config.reset_every * 60 * 60
-    if !exchange.all_clear()
-      log_error false, {message: "Want to reset, but exchange has outstanding requests", time}
-    else 
-      console.log 'Due for a reset. Assuming a monitoring process that will restart the app'
-      setTimeout process.exit, 5000
-
-  console.log "TICKING @ #{tick.time}! #{all_lag.length} queries with #{Math.average(all_lag)} avg lag"
+  if config.log_level > 0
+    console.log "TICKING @ #{tick.time}! #{all_lag.length} queries with #{Math.average(all_lag)} avg lag"
   # tick.lock = true
 
-
   cb = ->
+    if config.disabled
+      log_tick()
+
+      # tick.lock = false
+      KPI (stats) ->
+        m = stats.all.metrics                
+        m.key = 'stats' 
+        bus.save m
+
+        f = bus.fetch 'fees'
+        f.fees = m.fees 
+        f.slippage = stats.all.slippage
+        bus.save f      
+      return    
+
     update_position_status ->
       update_account_balances ->
 
         setImmediate -> # free thread to process any last trades
+          history.last_trade = history.trades[0]
 
           # tick.time = now()
           if !laggy
@@ -93,13 +102,10 @@ one_tick = ->
           # wait for the trades or cancelations to complete
           i = setImmediate ->
 
-            history.prune()
-
             for name in get_all_actors()
               bus.save from_cache(name)
 
 
-            # tick.lock = false  #...and now we're done with this tick
             all_lag = []
 
             log_tick()
@@ -113,6 +119,44 @@ one_tick = ->
               f.fees = m.fees 
               f.slippage = stats.all.slippage
               bus.save f
+
+            if config.reset_every && !unfilled_orders() && (tick.time - (tick.started or 0) > config.reset_every * 60 * 60 || global.restart_when_possible)
+              
+
+              setTimeout ->
+
+                # write feature cache to disk
+                for resolution, engine of feature_engine.resolutions
+                  engine.write_to_disk()
+
+                dealer_is_locked = false 
+                for name in get_all_actors()
+                  dealer = from_cache name 
+                  dealer_is_locked ||= dealer.locked 
+                
+                if !exchange.all_clear()
+                  if config.log_level > 0 
+                    log_error false, {message: "Want to reset, but exchange has outstanding requests", time}
+                else if dealer_is_locked
+                  if config.log_level > 0 
+                    console.error {message: "Want to reset, but at least one dealer is locked", time}
+                else 
+                  if config.log_level > 0
+                    console.log 'Due for a reset. Assuming a monitoring process that will restart the app'
+                  
+                  bus.save {key: 'time_to_die', now: true}
+
+                console.log "Tick done" if config.log_level > 0
+              , 100
+
+
+            # noww = now()
+            # history.disconnect_from_exchange_feed()
+            # history.load noww - tick.history_to_keep, noww, -> 
+            #   history.subscribe_to_exchange_feed -> 
+            #     tick.lock = false  #...and now we're done with this tick
+
+
 
 
   history.load_price_data (time.earliest or tick.started) - tick.history_to_keep, now(), cb, cb
@@ -182,7 +226,9 @@ update_position_status = (callback) ->
         order2fills[fill.order_id].push fill
 
       for name in get_dealers()
-        for pos in from_cache(name).positions when !pos.closed
+        dealer_data = from_cache(name)
+
+        for pos in dealer_data.positions when !pos.closed
 
           before = JSON.stringify(pos)
 
@@ -202,14 +248,21 @@ update_position_status = (callback) ->
                   t.fills.push new_fill
 
 
+
             if t.fills.length > 0 
               if t.flags?.market && t.type == 'buy'
                 t.to_fill = t.total - Math.summation (f.total for f in t.fills)
               else 
-                t.to_fill = t.amount - Math.summation (f.amount for f in t.fills)
+                t.to_fill = (t.original_amt or t.amount) - Math.summation (f.amount for f in t.fills)
 
               if t.to_fill < 0 
                 t.to_fill = 0 
+
+
+            if dealer_data.locked
+              # log_error false, {message: "skipping status updating because dealer is locked", name}
+              bus.save pos
+              continue
 
 
 
@@ -217,28 +270,41 @@ update_position_status = (callback) ->
             for order_id in t.orders
               orders_completed &&= !(order_id of open_orders)
               if order_id != t.current_order && (order_id of open_orders)
-                log_error true, 
-                  message: "Old order not marked as completed!"
-                  order: order_id 
-                  trade: t
+                if !t.current_order
+                  t.current_order = order_id
+                else 
+                  log_error false, 
+                    message: "Old order not marked as completed!"
+                    order: order_id 
+                    trade: t
+
 
             if t.to_fill == 0 && !orders_completed
 
-              log_error false, {message: "Nothing to fill but orders not completed", trade: t, fills: t.fills, open_orders}
+              console.error {message: "Nothing to fill but orders not completed", trade: t, fills: t.fills, open_orders}
 
             if orders_completed 
+              if (  (t.flags?.market && t.type == 'buy')  && t.to_fill > exchange.minimum_order_size(config.c1)) || \
+                 ( (!t.flags?.market || t.type == 'sell') && t.to_fill > exchange.minimum_order_size() )
 
-              if ( (t.flags?.market && t.type == 'buy')  && t.to_fill > exchange.minimum_order_size(config.c1)) || \
-                 ((!t.flags?.market || t.type == 'sell') && t.to_fill > exchange.minimum_order_size() && t.to_fill * t.rate > exchange.minimum_order_size(config.c1))
-                # this trade still needs more fills
-                t.current_order = null 
 
-                console.error
-                  message: "#{config.exchange} thinks we\'ve completed the trade, but our filled amount does not match. We\'ll issue another order to make up the difference."
-                  trade: t 
-                  fills: t.fills 
-                  to_fill: t.to_fill
-                  pos: pos.key
+                # Our filled amount doesn't match. We might have to issue another order. However, sometimes the exchange has marked an order
+                # as matched, but the fills aren't coming just yet. So we wait a little longer to make sure it is actually not completed yet.
+                key = JSON.stringify(t.orders) 
+                t.assessing_clear_order_since ?= {}
+                t.assessing_clear_order_since[key] ||= tick.time
+
+                if tick.time - t.assessing_clear_order_since[key] > 5 * 60
+                  t.assessing_clear_order_since[key] = null
+                  # this trade still needs more fills
+                  t.current_order = null 
+
+                  console.error
+                    message: "#{config.exchange} thinks we\'ve completed the trade, but our filled amount does not match. We\'ll issue another order to make up the difference."
+                    trade: t 
+                    fills: t.fills 
+                    to_fill: t.to_fill
+                    pos: pos.key
 
               else
 
@@ -278,7 +344,7 @@ update_position_status = (callback) ->
 
           changed = JSON.stringify(pos) != before
           if changed || !pos.closed
-            if changed
+            if changed && config.log_level > 0 
               console.log 'CHANGED!', pos
             bus.save pos
 
@@ -297,8 +363,93 @@ update_position_status = (callback) ->
 ############################
 # Live trading interface
 
+placed_order = ({result, pos, trade}) ->  
+  trade = refresh pos, trade 
+
+  if result.error
+    console.error "GOT ERROR TAKING OR MOVING POSITION", {pos, trade, err: result.error, body: result.body}
+
+  else if !result.order_id
+    result.error = "no order_id returned from placed order"
+    log_error true, 
+      message: "no order_id returned from placed order"
+      result: result 
+      pos: pos 
+      trade: trade 
+  else 
+    new_order = result.order_id
+    trade.current_order = new_order
+    trade.first_order ?= tick.time
+    trade.latest_order = tick.time
+
+    trade.fills ?= []
+    trade.created ?= tick.now
+    trade.original_rate ?= trade.rate 
+    trade.original_amt ?= trade.amount
+
+    trade.orders ?= []
+    if new_order not in trade.orders 
+      trade.orders.push new_order
+
+    if result.info 
+      trade.info ?= []
+      trade.info.push result.info 
+
+    console.log "ADDED #{result.order_id} to trade", trade if config.log_level > 1 
+
+    bus.save pos
+
+
+
+place_dynamic_order = ({trade, amount, pos}, placed_callback) ->
+  console.log 'PLACING DYNAMIC ORDER' if config.log_level > 1
+  exchange.dynamic_place_order
+    type: trade.type
+    amount: amount
+    rate: trade.rate
+    c1: config.c1 
+    c2: config.c2
+    flags: trade.flags
+    trade: trade # orphanable
+    pos: pos
+  , (result) -> # placed callback
+    # trade = refresh pos, trade    
+    placed_order {result, pos, trade}
+    placed_callback result 
+
+    if result.error 
+      dealer = from_cache pos.dealer
+      dealer.locked = false 
+      bus.save dealer
+      
+  , (result) -> # updated callback
+    placed_order {result, pos, trade}
+  , -> # finished callback
+    console.log 'UNLOCKING DEALER' if config.log_level > 1
+    dealer = from_cache pos.dealer
+    dealer.locked = false 
+    bus.save dealer  
+
+update_dynamic_order = ({trade, pos}) ->
+  console.log 'UPDATING DYNAMIC ORDER' if config.log_level > 1
+  exchange.dynamic_move_order
+    trade: trade # orphanable
+    pos: pos      
+  , (result) -> # updated callback
+    placed_order {result, pos, trade}
+  , -> # finished callback
+    console.log 'UNLOCKING DEALER' if config.log_level > 1
+    dealer = from_cache pos.dealer
+    dealer.locked = false 
+    bus.save dealer  
+
+
+
 
 take_position = (pos, callback) ->
+  dealer = from_cache(pos.dealer)
+  dealer.locked = tick.time 
+  bus.save dealer
 
   trades = (trade for trade in [pos.entry, pos.exit] when trade && !trade.current_order && !trade.closed)
   trades_left = trades.length 
@@ -311,111 +462,109 @@ take_position = (pos, callback) ->
       return 
 
   error = false
-  for trade, idx in trades
-    amount =  trade.to_fill - 0
+  for trade in trades
+    amount =  trade.to_fill
+    do (trade, amount) -> 
 
-    if amount < exchange.minimum_order_size()
-      log_error true, 
-        message: "trying to place an order for less than minimum" 
-        minimum: exchange.minimum_order_size()
-        trade: trade 
-        pos: pos 
-      return 
-
-
-    exchange.place_order
-      type: trade.type
-      amount: amount
-      rate: trade.rate
-      c1: config.c1 
-      c2: config.c2
-      flags: trade.flags
-    , do (trade, idx) -> (result) ->
-
-      trades_left--
-
-      if result.error 
-        error = true 
-        err = result.error     
-        console.error "GOT ERROR TAKING POSITION", {pos, trades_left, err}
-        
-      else if !result.order_id
-        result.error =  "placing an order, didn't get an error, but didn't get an order id either"
+      if amount < exchange.minimum_order_size()
         log_error true, 
-          message: "placing an order, didn't get an error, but didn't get an order id either"
-          result: result 
-          pos: pos 
+          message: "trying to place an order for less than minimum" 
+          minimum: exchange.minimum_order_size()
           trade: trade 
-          amount: amount
-          rate: rate
-      else 
-        trade.last_ordered = tick.time
-        trade.current_order = result.order_id
-        trade.orders ?= []
-        if trade.current_order && trade.current_order not in trade.orders 
-          trade.orders.push trade.current_order
-        if result.info 
-          trade.info ?= []
-          trade.info.push result.info 
-        console.log "Placed order:", trade
-        bus.save pos
+          pos: pos 
+        return 
 
-      if trades_left <= 0 
-        callback error
+
+      if config.exchange == 'gdax' && trade.flags?.order_method > 1
+
+        place_dynamic_order
+          pos: pos
+          trade: trade
+          amount: amount
+        , (result) ->     
+          trades_left--
+          error = error or result.error
+          console.log 'PLACED CALLBACK', {trades_left, error, trade, entry: pos.entry, exit: pos.exit} if config.log_level > 1
+          callback error, trades_left
+
+      else
+        console.log 'PLACING STATIC ORDER', {config, trade} if config.log_level > 1
+        exchange.place_order
+          type: trade.type
+          amount: amount
+          rate: trade.rate
+          c1: config.c1 
+          c2: config.c2
+          flags: trade.flags
+        , (result) ->
+
+          trades_left--
+          placed_order {result, pos, trade}
+          error = error or result.error
+          if trades_left <= 0 
+            dealer.locked = false 
+            bus.save dealer
+
+          callback error, trades_left
 
 
 update_trade = ({pos, trade, rate, amount}, callback) -> 
+  trade = refresh pos, trade
 
   console.assert !trade.flags?.market
 
-  cb = (result) -> 
-    if result.error
-      err = result.error
-      console.log "GOT ERROR MOVING POSITION", {pos, err}
-    else if !result.order_id
-      result.error = "updating a trade, didn't get an error, but didn't get an order id either"
-      log_error true, 
-        message: "updating a trade, didn't get an error, but didn't get an order id either"
-        result: result 
-        pos: pos 
-        trade: trade 
-        rate: rate 
-        amount: amount
+  dealer = from_cache(pos.dealer)
+  dealer.locked = tick.time 
+  bus.save dealer
+
+  if config.log_level > 1
+    console.log 'UPDATING TRAAAAADE', 
+      trade: trade
+      exchange: config.exchange 
+      order_method: trade.flags?.order_method
+
+  if config.exchange == 'gdax' && trade.flags?.order_method > 1    
+    if trade.current_order
+      update_dynamic_order
+        pos: pos
+        trade: trade
     else 
-      new_order = result.order_id
-      trade.orders ?= []
-      if new_order && new_order not in trade.orders 
-        trade.orders.push new_order
-      trade.current_order = new_order
-      if result.info 
-        trade.info ?= []
-        trade.info.push result.info 
-
-      bus.save pos if pos.key
-
-    callback result.error
-
-  if trade.current_order
-    exchange.move_order
-      order_id: trade.current_order
-      rate: rate
-      amount: amount
-      type: trade.type
-      c1: config.c1 
-      c2: config.c2
-      flags: trade.flags
-    , cb
+      place_dynamic_order
+        pos: pos
+        trade: trade
+        amount: amount
+      , (result) ->         
+        callback? result.error
 
   else 
+    cb = (result) ->
+      placed_order {result, pos, trade}
+      dealer.locked = false 
+      bus.save dealer    
+      callback? result.error
 
-    exchange.place_order
-      type: trade.type
-      amount: amount
-      rate: rate
-      c1: config.c1 
-      c2: config.c2
-      flags: trade.flags
-    , cb
+
+    if trade.current_order
+      exchange.move_order
+        order_id: trade.current_order
+        rate: rate
+        amount: amount
+        type: trade.type
+        c1: config.c1 
+        c2: config.c2
+        flags: trade.flags
+      , cb
+
+    else 
+
+      exchange.place_order
+        type: trade.type
+        amount: amount
+        rate: rate
+        c1: config.c1 
+        c2: config.c2
+        flags: trade.flags
+      , cb
 
 
 cancel_unfilled = (pos, callback) ->
@@ -423,21 +572,23 @@ cancel_unfilled = (pos, callback) ->
   cancelations_left = trades.length 
 
   for trade in trades
-    exchange.cancel_order
-      order_id: trade.current_order
-    , (result) -> 
-      cancelations_left--
+    do (trade) ->
+      exchange.cancel_order
+        order_id: trade.current_order
+      , (result) -> 
+        trade = refresh pos, trade
+        cancelations_left--
 
-      if result?.error
-        console.log "GOT ERROR CANCELING POSITION", {pos, cancelations_left, err, resp, body}
-      else
-        console.log 'CANCELED POSITION'
-        delete trade.current_order
-        bus.save pos if pos.key
+        if result?.error && result?.error != 'order not found'
+          console.log "GOT ERROR CANCELING POSITION", {pos, cancelations_left, err, resp, body}
+        else
+          console.log 'CANCELED POSITION'
+          delete trade.current_order
+          bus.save pos if pos.key
 
-      if cancelations_left == 0
-        callback()
-        bus.save pos if pos.key
+        if cancelations_left == 0
+          callback()
+          bus.save pos
 
 
 
@@ -552,29 +703,33 @@ update_account_balances = (callback) ->
       dbalance.on_order.c2 = deth_on_order
 
       if dbalance.balances.c1 < 0 || dbalance.balances.c2 < 0
-        output = if config.simulation then console.assert else console.error
-
         fills = []
         fills_out = []
+        pos = null 
         for pos in positions
           for trade in [pos.entry, pos.exit] when trade 
             fills = fills.concat trade.fills
-            console.log trade
+            console.log trade if config.log_level > 0
             for fill in trade.fills
               if fill.type == 'sell'
-                fills_out.push "#{trade.created} #{fill.order_id}  #{fill.total}  -#{fill.amount} #{fill.fee}"
+                fills_out.push "#{pos.key}\t#{trade.entry or false}\t#{trade.created}\t#{fill.order_id}\t#{fill.total}\t-#{fill.amount}\t#{fill.fee}"
               else 
-                fills_out.push "#{trade.created} #{fill.order_id}  -#{fill.total}  #{fill.amount}  #{fill.fee}"
+                fills_out.push "#{pos.key}\t#{trade.entry or false}\t#{trade.created}\t#{fill.order_id}\t-#{fill.total}\t#{fill.amount}\t#{fill.fee}"
 
-        log_error config.simulation,
-          message: 'negative balance!?!'
-          dealer: dealer
-          balance: sheet.balances
-          dbalance: sheet[dealer]
-          positions: positions
-          fills: fills
-          fills_out: fills_out
+        if pos.last_error != 'Negative balance'
+          log_error config.simulation,
+            message: 'negative balance!?!'
+            dealer: dealer
+            balance: sheet.balances
+            dbalance: sheet[dealer]
+            positions: positions
+            last_entry: positions[positions.length - 1]?.entry
+            last_exit: positions[positions.length - 1]?.exit
+            fills: fills
+            fills_out: fills_out
 
+        pos.last_error = 'Negative balance'
+        bus.save pos
 
     sheet.balances.c1 = sheet.deposits.c1 + btc
     sheet.balances.c2 = sheet.deposits.c2 + eth
@@ -681,6 +836,7 @@ operation = module.exports =
       c2: 'ETH'
       accounting_currency: 'USDT'
       enforce_balance: true
+      log_level: 1
 
     bus.save config
 
@@ -689,16 +845,25 @@ operation = module.exports =
 
     time = from_cache 'time'
 
+    console.log 'STARTING METH' if config.log_level > 0
 
-    console.log 'STARTING METH'
+    bus.save {key: 'time_to_die', now: false}
+    bus('time_to_die').on_save = (o) ->
+      if o.now
+        setTimeout process.exit, 1
+
+    bus('time_to_die').on_save = (o) ->
+      global.restart_when_possible = true
 
     pusher.init {history, take_position, cancel_unfilled, update_trade}
 
-    console.log "...updating deposit history"
+    # load feature cache to disk
+    for resolution, engine of feature_engine.resolutions
+      engine.load_from_disk()
 
     history_width = history.longest_requested_history
 
-    console.log "...loading past #{(history_width / 60 / 60 / 24).toFixed(2)} days of trade history"
+    console.log "...loading past #{(history_width / 60 / 60 / 24).toFixed(2)} days of trade history" if config.log_level > 0
 
     tick.started = ts = now()
     tick.history_to_keep = history_width
@@ -712,7 +877,7 @@ operation = module.exports =
       if dealer.locked 
         dealer.locked = false 
         bus.save dealer 
-        log_error false, {message: "Unlocked dealer on reset. Could have bad state.", name}
+        console.error {message: "Unlocked dealer on reset. Could have bad state.", name}
 
 
     history.load_price_data (time.earliest or tick.started) - history_width, ts, ->
@@ -721,11 +886,11 @@ operation = module.exports =
 
         history.last_trade = history.trades[0]
 
-        console.log "...connecting to #{config.exchange} live updates"
+        console.log "...connecting to #{config.exchange} live updates" if config.log_level > 0
         
-        history.subscribe_to_trade_history ->
+        history.subscribe_to_exchange_feed ->
 
-          console.log "...updating account balances"
+          console.log "...updating account balances" if config.log_level > 0 
 
           # update_deposit_history ->
           update_fee_schedule -> 
@@ -733,12 +898,15 @@ operation = module.exports =
 
               update_account_balances ->
 
-                console.log "...hustling!"
+                console.log "...hustling!" if config.log_level > 0 
 
                 one_tick()
                 setInterval one_tick, pusher.tick_interval * 1000
 
-    
+                # if config.exchange == 'gdax' && config.disabled 
+                #   setInterval -> 
+                #     global.update_rate 'buy', -> 
+                #   , 1000
 
 
   setup: ({port, db_name, clear_old}) -> 

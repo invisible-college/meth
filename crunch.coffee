@@ -82,7 +82,6 @@ compute_KPI = (dealer_or_dealers, name) ->
   more_than_hour = 0 
   open = 0 
   completed = 0 
-  reset = 0 
   gains = 0 
 
 
@@ -94,13 +93,12 @@ compute_KPI = (dealer_or_dealers, name) ->
     more_than_day  += 1 if (!p.closed && ts - p.created > 24 * 60 * 60) || ( p.closed && p.closed - p.created > 24 * 60 * 60)
     more_than_hour += 1 if (!p.closed && ts - p.created > 60 * 60) || ( p.closed && p.closed - p.created > 60 * 60)
      
-    reset += 1 if p.reset 
     if !p.closed 
       open += 1 
     else 
       completed += 1
 
-    gains += 1 if p.closed && (p.profit or p.expected_profit) > 0
+    gains += 1 if p.closed && p.profit > 0
 
     for trade in [p.entry, p.exit] when trade?.original_rate?
       original_rate = trade.original_rate
@@ -143,7 +141,6 @@ compute_KPI = (dealer_or_dealers, name) ->
     status:
       open: open
       completed: completed
-      reset: reset
       gains: gains
 
   fills = (pos.entry.fills for pos in positions when pos.entry?.fills?.length > 0)
@@ -257,7 +254,7 @@ compute_KPI = (dealer_or_dealers, name) ->
 
       pos = positions_by_closed.pop()
 
-      profits_from_trades += (pos.profit or pos.expected_profit)
+      profits_from_trades += pos.profit
 
     added_active = false 
     while true 
@@ -372,7 +369,7 @@ KPI = (callback) ->
     dates.sort()
     KPI.period_length = (dates[1] - dates[0]) / 1000
 
-  console.log '\n\nComputing KPIs'
+  console.log '\n\nComputing KPIs' if config?.log_level > 0
 
   dealers = Object.keys(cached_positions)
   series_data = get_series()
@@ -434,10 +431,6 @@ dealer_measures = (stats) ->
   'Success': (s) -> 
     if s of stats 
       "#{(indicators.success(s,stats)).toFixed(1)}%" 
-
-  'Not reset': (s) -> 
-    if s of stats 
-      "#{indicators.not_reset(s,stats).toFixed(1)}%"  
 
   'μ duration': (s) -> 
     if s of stats 
@@ -674,7 +667,6 @@ indicators =
 
 
   completed: (s, stats) -> stats[s].status.completed
-  not_reset:    (s, stats) -> 100 - 100 * stats[s].status.reset / ((stats[s].status.completed + stats[s].status.open) or 1)
 
   success:  (s, stats) -> 
     if stats[s].status.completed > 0 

@@ -155,7 +155,7 @@ module.exports = poloniex =
           trade.date = Date.parse(trade.date + " +0000") / 1000
         callback(trades)
 
-  subscribe_to_trade_history: (opts, callback) -> 
+  subscribe_to_exchange_feed: (opts, callback) -> 
     WS = require('ws')
     wsuri = "wss://api2.poloniex.com"
 
@@ -168,13 +168,19 @@ module.exports = poloniex =
         setTimeout create_connection, 500
         return
 
-      reconnect = -> 
+      connection.destroy = -> 
+        connection.terminated_on_purpose = true
         try 
           if connection.keepAliveId
             clearInterval connection.keepAliveId
           connection.terminate()
         catch e 
           console.log "Couldn't terminate connection. Proceeding."
+
+      connection.reset = reconnect = -> 
+        return if connection.terminated_on_purpose
+        connection.destroy()
+
         setTimeout ->
           console.log '...trying to reconnect'
 
@@ -188,20 +194,16 @@ module.exports = poloniex =
 
       connection.onopen = (e) ->
         connection.keepAliveId = setInterval -> 
+          return if connection.terminated_on_purpose
           connection.send('.', (error) -> reconnect() if error)
-        , 60000
+        , 30000
 
-        console.log '...engine is now receiving live updates'
-
-        lag_logger?(99999)
-           # record an initial laggy connection to give engine a little 
-           # time to recalibrate history in case there was a reconnection
-           # where we missed some trades. 
+        # console.log '...engine is now receiving live updates'
 
         connection.send JSON.stringify({command: 'subscribe', channel: "#{config.c1}_#{config.c2}"}), (error) ->
           reconnect() if error 
 
-        callback()
+        callback(connection)
 
       connection.onmessage = (msg) -> 
         if !msg || !msg.data 
@@ -224,9 +226,10 @@ module.exports = poloniex =
 
 
       connection.onclose = (e) -> 
-        console.log '...lost connection to live feed from exchange',
-          event: e 
-        reconnect()
+        if !connection.terminated_on_purpose
+          console.log '...lost connection to live feed from exchange',
+            event: e 
+          reconnect() 
 
       connection.on 'unexpected-response', (request, response) ->
         console.error('error from poloniex', "unexpected-response (statusCode: #{response.statusCode}, #{}{response.statusMessage}")
@@ -341,7 +344,7 @@ module.exports = poloniex =
       , (err, resp, body) -> 
 
         if !body || body.error 
-          console.log 'Exchange fee returned error, retrying'
+          console.log 'Exchange fee returned error, retrying', body
           poloniex.get_my_exchange_fee opts, callback 
           return
 
@@ -365,6 +368,7 @@ module.exports = poloniex =
           error: err or body.error or 'Something went wrong, not sure what!'
           response: resp 
           message: body.error 
+          body: body
       else 
         body.order_id = body.orderNumber
         callback body
@@ -383,6 +387,7 @@ module.exports = poloniex =
           error: err or body.error or 'Something went wrong, not sure what!'
           response: resp 
           message: body.error 
+          body: body
       else
         # todo: check for whether fill or kill was successful
         if false # fill or kill did not work
@@ -444,6 +449,7 @@ module.exports = poloniex =
           error: err or body.error or 'Something went wrong, not sure what!'
           response: resp 
           message: body.error 
+          body: body
 
       else 
         callback {order_id: body.orderNumber}       

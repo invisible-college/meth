@@ -49,8 +49,8 @@ module.exports = exchange =
 
   # callsback for each new trade
   # opts: none
-  subscribe_to_trade_history: (opts, callback) -> 
-    exchange[config.exchange].subscribe_to_trade_history opts, callback
+  subscribe_to_exchange_feed: (opts, callback) -> 
+    exchange[config.exchange].subscribe_to_exchange_feed opts, callback
 
   #####
   # TRADING API
@@ -89,6 +89,18 @@ module.exports = exchange =
   #  market
   place_order: (opts, callback) -> 
     exchange[config.exchange].place_order opts, callback
+
+  dynamic_place_order: (opts, placed_callback, updated_callback, finished_callback) -> 
+    if exchange[config.exchange].dynamic_place_order
+      exchange[config.exchange].dynamic_place_order opts, placed_callback, updated_callback, finished_callback
+    else 
+      throw "#{config.exchange} does not have a dynamic_place_order method"
+
+  dynamic_move_order: (opts, updated_callback, finished_callback) -> 
+    if exchange[config.exchange].dynamic_move_order
+      exchange[config.exchange].dynamic_move_order opts, updated_callback, finished_callback
+    else 
+      throw "#{config.exchange} does not have a dynamic_move_order method"
 
   # opts: 
   #  order_id

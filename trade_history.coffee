@@ -26,7 +26,7 @@ module.exports = history =
       price_data = fetch 'price_data'
 
       patch = (idx, pair, min_date) -> 
-        console.log "Patching #{pair} candle at index #{idx} of #{price_data[pair].length}" 
+        console.log "Patching #{pair} candle at index #{idx} of #{price_data[pair].length}" if config.log_level > 0
 
         copy_from_idx = if idx == 0 then 0 else idx - 1
         cpy = bus.clone(price_data[pair][copy_from_idx])
@@ -51,10 +51,10 @@ module.exports = history =
           equal
 
         if !equal_lengths()
-          console.log "Price data needs patching"
+          console.log "Price data needs patching" if config.log_level > 0
 
           if config.disable_price_patching
-            console.log "retrying"
+            console.log "retrying" if config.log_level > 0
             setTimeout load_history, 1000
             return
           else 
@@ -71,7 +71,7 @@ module.exports = history =
               patch_needed = !(c1_date == c2_date == cx_date)
 
               if i == 0 && patch_needed
-                console.error "price data uneven at start. forward patching."
+                console.error "price data uneven at start. forward patching." if config.log_level > 0
 
               if c1_date > Math.min(c2_date, cx_date)
                 patch i, 'c1', Math.min(c2_date, cx_date)
@@ -87,7 +87,7 @@ module.exports = history =
               cnt += 1
 
             console.error equal_lengths(), 
-              msg: "patching failed"
+              msg: "patching price data failed"
               c1_len: price_data.c1?.length
               c2_len: price_data.c2?.length
               c1xc2_len: price_data.c1xc2?.length
@@ -104,9 +104,9 @@ module.exports = history =
           
 
           if candle.date != data[idx - 1].date + granularity 
-            console.log "#{pair} has a missing candle at #{idx}"
+            console.log "#{pair} has a missing candle at #{idx}" if config.log_level > 0
             if config.disable_price_patching
-              console.log "retrying"
+              console.log "retrying" if config.log_level > 0
               setTimeout load_history, 1000
               return
             # else 
@@ -171,29 +171,31 @@ module.exports = history =
           error = price_history.length == 0 || price_history[0].date > start || price_history[price_history.length - 1].date + granularity < end
 
           if error 
-            console.log "#{config.exchange} returned bad price history for #{c1}-#{c2}."
+            console.log "#{config.exchange} returned bad price history for #{c1}-#{c2}." if config.log_level > 0
             if price_history && price_history.length > 0 && price_history[0].date > 0 && price_history[price_history.length - 1].date > 0 
-              console.log 
-                first: price_history[0].date
-                target_start: start 
-                last: price_history[price_history.length - 1].date + granularity
-                target_end: end 
-                first_entry: price_history[0]
-                last_entry: price_history[price_history.length - 1]
+              
+              if config.log_level > 1
+                console.log 
+                  first: price_history[0].date
+                  target_start: start 
+                  last: price_history[price_history.length - 1].date + granularity
+                  target_end: end 
+                  first_entry: price_history[0]
+                  last_entry: price_history[price_history.length - 1]
 
               if callback_empty?
                 callback_empty({start: price_history[0].date, end: price_history[price_history.length - 1].date + granularity})
                 cb()
-                console.log 'not retrying.'
+                console.log 'not retrying.' if config.log_level > 0
                 return
 
             else if callback_empty?
               callback_empty()
               cb()
-              console.log 'not retrying.'
+              console.log 'not retrying.' if config.log_level > 0
               return
 
-            console.log "Trying again."
+            console.log "Trying again." if config.log_level > 0
             attempts += 1
             setTimeout load_chart, attempts * 100
 
@@ -222,7 +224,7 @@ module.exports = history =
     first_hour = Math.floor start / 60 / 60
     last_hour = Math.ceil end / 60 / 60
 
-    if config.log
+    if config.log_level > 0
       bar = new progress_bar '  loading history [:bar] :percent :etas :elapsed',
         complete: '='
         incomplete: ' '
@@ -235,15 +237,15 @@ module.exports = history =
       if func && !config.history_loaded
         to_run.push func 
       else 
-        bar.tick() if config.log
+        bar.tick() if config.log_level > 0
 
 
     is_done = =>
-      bar.tick() if config.log
+      bar.tick() if config.log_level > 0
       if to_run.length == 0
 
         @trades.sort (a,b) -> b.date - a.date
-        console.log "Done loading history! #{@trades.length} trades." if config.log
+        console.log "Done loading history! #{@trades.length} trades." if config.log_level > 0
 
         # duplicate detection
         if false 
@@ -293,13 +295,22 @@ module.exports = history =
 
     previous_len - @trades.length
 
+  disconnect_from_exchange_feed: ->
+    if @ws_trades 
+      @ws_trades.destroy()
+      @ws_trades = null 
 
-  subscribe_to_trade_history: (callback) ->
+  subscribe_to_exchange_feed: (callback) ->
+    return callback?() if config.disabled
 
-    exchange.subscribe_to_trade_history 
+    @disconnect_from_exchange_feed()
+
+    exchange.subscribe_to_exchange_feed 
       new_trade_callback: (new_trade) => 
         @last_trade = @process_new_trade new_trade, true
-    , callback
+    , (conn) => 
+      @ws_trades = conn
+      callback?()
 
 
   load_from_file: (fname, hour, end) -> 

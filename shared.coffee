@@ -8,6 +8,16 @@ is_server = ->
 
 module.exports = 
 
+  # because statebus orphans nested, unkeyed objects on save
+  refresh: (pos, trade) -> 
+    console.assert pos.key
+    if pos.entry && trade.entry
+      pos.entry
+    else if pos.exit 
+      pos.exit 
+    else 
+      trade 
+
   get_settings: (name) ->
     get_settings.cache ||= {}
     if name of get_settings.cache

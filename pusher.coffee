@@ -1,6 +1,6 @@
 require './shared'
 
-feature_engine = require './feature_engine'
+global.feature_engine = require './feature_engine'
 exchange = require './exchange'
 
 global.dealers = {}
@@ -45,9 +45,8 @@ global.log_error = (halt, data) ->
 
 
   if halt 
-    setTimeout ->
-      console.assert false, data
-    , 100
+    bus.save {key: 'time_to_die', now: true}
+    console.error "Halting because of:", data
   else 
     console.error data
 
@@ -255,7 +254,7 @@ find_opportunities = (balance) ->
     if dealer_data.locked 
       locked_for = tick.time - dealer_data.locked
       console.log "Skipping #{name} because it is locked (locked for #{locked_for}s)"
-      if locked_for > 10 * 60 && locked_for < 20 * 60
+      if locked_for > 60 * 60 && locked_for < 68 * 60
         log_error false, {message: "#{name} locked an excessive period of time.", dealer_data, locked_for}
       continue
 
@@ -313,6 +312,14 @@ find_opportunities = (balance) ->
     eval_exit_every_n_seconds = settings.eval_exit_every_n_seconds or config.eval_exit_every_n_seconds
     if tick.time - pusher.last_checked_exit[name] < eval_exit_every_n_seconds
       continue 
+
+    if dealer_data.locked 
+      locked_for = tick.time - dealer_data.locked
+      if locked_for > 60 * 60 && locked_for < 68 * 60
+        log_error false, {message: "#{name} locked an excessive period of time.", dealer_data, locked_for}
+      continue
+
+
     pusher.last_checked_exit[name] = tick.time
 
     # see if any open positions want to exit
@@ -328,15 +335,22 @@ find_opportunities = (balance) ->
 
       if opportunity
         if opportunity.action == 'exit'
-          if pos.entry.type == 'buy'
+          type = if pos.entry.type == 'buy' then 'sell' else 'buy'
+
+          if type == 'sell' 
+            amt = opportunity.amount or pos.entry.amount
+            if amt < exchange.minimum_order_size()
+              opportunity.amount = 1.02 * exchange.minimum_order_size()
+              #log_error false, {message: 'resizing order so it is above minimum', opportunity, amt}
             opportunity.required_c2 = opportunity.amount or pos.entry.amount
           else 
-            opportunity.required_c1 = (opportunity.amount or pos.entry.amount) * opportunity.rate
+            total = (opportunity.amount or pos.entry.amount) * opportunity.rate
+            if total < exchange.minimum_order_size(config.c1)
+              opportunity.amount = 1.02 * exchange.minimum_order_size(config.c1) / opportunity.rate
+              #log_error false, {message: 'resizing order so it is above minimum', opportunity, total}
+            opportunity.required_c1 = (opportunity.amount or pos.entry.amount) * opportunity.rate            
 
-          if opportunity.amount < exchange.minimum_order_size()
-            log_error false, {message: "Can't exit because amount is less than minimum", opportunity, pos, balance, entry: pos.entry, exit: pos.exit, entry_fills: pos.entry?.fills, exit_fills: pos.exit?.fills}
-            continue
-
+            
         opportunity.pos = pos 
         opportunities.push opportunity
 
@@ -363,6 +377,15 @@ find_opportunities = (balance) ->
 
     for pos in open_positions[name] when (pos.entry && !pos.entry.closed) || \
                                          (pos.exit  && !pos.exit.closed)
+
+      unfilled = if pos.entry.closed then pos.exit else pos.entry 
+
+      if !config.simulation 
+        continue if dealer_data.locked 
+        continue if config.exchange == 'gdax' && \
+                    unfilled.flags?.order_method > 1 && \
+                    unfilled.latest_order > tick.started  # make sure trades don't get stuck if there's a restart
+                  # because we're in the midst of a dynamically-updating order
 
       opportunity = dealer.eval_unfilled_trades
         position: pos 
@@ -490,11 +513,7 @@ create_position = (spec, dealer) ->
 
   if config.exchange == 'gdax' 
     for trade in [buy, sell] when trade
-      rounder = if trade.type == 'buy' then Math.ceil else Math.floor
-      if config.c1 == 'USD' # can't have fractions of cents (at least on GDAX!)
-        trade.rate = parseFloat((rounder(trade.rate * 100) / 100).toFixed(2))
-      else 
-        trade.rate = parseFloat((rounder(trade.rate * 1000000) / 1000000).toFixed(6))
+      trade.rate = parseFloat trade.rate.toFixed(exchange.minimum_rate_precision())
       trade.amount = parseFloat((Math.floor(trade.amount * 1000000) / 1000000).toFixed(6))
 
   if buy
@@ -505,18 +524,21 @@ create_position = (spec, dealer) ->
     sell.to_fill ||= sell.amount
 
 
-
   position = extend {}, spec,
-    key: "position/#{dealer}-#{tick.time}" if !config.simulation
+    key: if !config.simulation then "position/#{dealer}-#{tick.time}" 
     dealer: dealer
     created: tick.time
 
     entry: if buy?.entry then buy else sell
     exit: if simultaneous then (if sell.entry then buy else sell)
 
-  # predict returns if we place both at once
-  if simultaneous
-    set_expected_profit position
+  for trade in [position.entry, position.exit] when trade 
+    defaults trade, 
+      created: tick.time
+      fills: []
+      original_rate: trade.rate
+      original_amt: trade.amount
+
 
   position
 
@@ -533,25 +555,22 @@ exit_position = ({pos, opportunity}) ->
   amount = opportunity.amount or pos.entry.amount
   type = if pos.entry.type == 'buy' then 'sell' else 'buy'
 
-  pos.exit = 
+  trade = pos.exit = 
     amount: amount
     type: type
     rate: rate
     to_fill: if market_trade && type == 'buy' then amount * rate else amount
     flags: if opportunity.flags? then opportunity.flags
+    entry: false
+    created: tick.time
+    fills: []
+    original_rate: rate
+    original_amt: amount
 
-  if config.exchange == 'gdax' 
-    for trade in [pos.exit.rate] when trade
-      rounder = if trade.type == 'buy' then Math.ceil else Math.floor
+  if config.exchange == 'gdax'
+    trade.rate = parseFloat trade.rate.toFixed(exchange.minimum_rate_precision())
+    trade.amount = parseFloat((Math.floor(trade.amount * 1000000) / 1000000).toFixed(6))
 
-      if config.c1 == 'USD' # can't have fractions of cents (at least on GDAX!)
-        trade.rate = parseFloat((rounder(trade.rate * 100) / 100).toFixed(2))
-      else 
-        trade.rate = parseFloat((rounder(trade.rate * 1000000) / 1000000).toFixed(6))
-      trade.amount = parseFloat((Math.floor(trade.amount * 1000000) / 1000000).toFixed(6))
-
-
-  set_expected_profit pos
   pos
 
 
@@ -559,41 +578,30 @@ exit_position = ({pos, opportunity}) ->
 take_position = (pos) -> 
 
   if pusher.take_position && !pos.series_data
-    dealer = from_cache(pos.dealer)
-    dealer.locked = tick.time 
-    bus.save dealer
-    pusher.take_position pos, (error) -> 
-      dealer.locked = false
-      took_position pos, error
-      bus.save dealer      
+    pusher.take_position pos, (error, trades_left) -> 
+      took_position(pos, error, trades_left == 0) 
   else 
     took_position pos
 
-took_position = (pos, error) ->   
-
+took_position = (pos, error, destroy_if_all_errored) -> 
+  if !pos.series_data 
+    console.log "TOOK POSITION", pos, {error, destroy_if_all_errored}
   if error && !config.simulation
     for trade in ['entry', 'exit'] when pos[trade]
 
       if !pos[trade].current_order
-        pos.expected_profit = undefined if pos.expected_profit
+
         if !(pos[trade].orders?.length > 0)
           pos[trade] = undefined 
         else
           console.error  
             message: "We've partially filled a trade, but an update order occurred. I think Pusher will handle this properly though :p"
             pos: pos 
-          pos[trade].created = pos.created # faster recovery
 
-    if !pos.exit && !pos.entry
+    if !pos.exit && !pos.entry && destroy_if_all_errored
       return destroy_position pos 
-    else 
-      bus.save pos
 
-  for trade in [pos.entry, pos.exit] when trade && !trade.created
-    trade.created ?= tick.time
-    trade.fills ?= []
-    trade.original_rate ?= trade.rate
-    trade.original_amt ?= trade.amount
+  bus.save pos if pos.key
 
   if !from_cache(pos.dealer).positions
     throw "#{pos.dealer} not properly initialized with positions"
@@ -605,13 +613,11 @@ took_position = (pos, error) ->
 
 
 update_trade = ({pos, trade, opportunity}) ->
+
   rate = opportunity.rate
 
   if config.exchange == 'gdax'
-    if config.c1 == 'USD' # can't have fractions of cents (at least on GDAX!)
-      rate = parseFloat((Math.round(rate * 100) / 100).toFixed(2))
-    else 
-      rate = parseFloat((Math.round(rate * 1000000) / 1000000).toFixed(6))
+    rate = parseFloat rate.toFixed(exchange.minimum_rate_precision())
 
   if isNaN(rate) || !rate || rate == 0
     return log_error true, 
@@ -620,7 +626,7 @@ update_trade = ({pos, trade, opportunity}) ->
       pos: pos 
 
   if trade.to_fill == 0
-    return log_error true, 
+    return log_error false, 
       message: 'trying to move a trade that should already be closed'
       pos: pos 
       trade: trade 
@@ -632,17 +638,12 @@ update_trade = ({pos, trade, opportunity}) ->
       message: 'trying to move a market exit'
       trade: trade 
 
-
-
   if trade.type == 'buy'
     # we need to adjust the *amount* we're buying because our buying power has changed
     amt_purchased = 0 
-    total_sold = 0 
     for f in (trade.fills or [])
       amt_purchased += f.amount
-      total_sold += f.total
-
-    amt_remaining = (trade.original_amount or trade.amount) - amt_purchased    
+    amt_remaining = (trade.original_amt or trade.amount) - amt_purchased    
     total_remaining = amt_remaining * (trade.original_rate or trade.rate)
     new_amount = total_remaining / rate 
   else 
@@ -657,31 +658,12 @@ update_trade = ({pos, trade, opportunity}) ->
     trade.amount = new_amount + amt_purchased
     trade.to_fill = new_amount 
 
-
-  cb = (error) -> 
-    if !error 
-      trade.reset ?= tick.time
-      trade.created = tick.time # I don't like this...
-      trade.resets ?= 0
-      trade.resets += 1
-      set_expected_profit pos
-
   if pusher.update_trade
-    dealer = from_cache(pos.dealer)
-    dealer.locked = tick.time 
-    bus.save dealer
-
     pusher.update_trade 
       pos: pos
-      trade: trade
+      trade: trade # orphanable
       rate: rate 
-      amount: new_amount
-    , (error) -> 
-      dealer.locked = false 
-      bus.save dealer
-      cb error 
-  else 
-    cb()
+      amount: trade.to_fill
 
 
 
@@ -704,8 +686,6 @@ cancel_unfilled = (pos) ->
 canceled_unfilled = (pos) ->
   for trade in ['exit', 'entry'] when !pos[trade]?.closed
     if pos[trade] && !pos[trade].current_order
-      pos.expected_profit = undefined if pos.expected_profit
-      pos.reset ?= tick.time
       if pos[trade].fills.length == 0 
         pos[trade] = undefined
 
@@ -743,32 +723,6 @@ destroy_position = (pos) ->
 
 
 
-set_expected_profit = (pos) -> 
-  entry = pos.entry
-  exit = pos.exit
-  if entry && exit && entry.rate > 0 && exit.rate > 0 
-    eth = btc = 0 
-    xfee = from_cache('balance').taker_fee
-
-    for trade in [entry, exit]
-
-      if trade.type == 'buy'
-        eth += trade.amount 
-        if config.exchange == 'poloniex'
-          eth -= if trade.fee? then trade.fee else trade.amount * xfee
-        else 
-          btc -= if trade.fee? then trade.fee else (trade.total or trade.amount * trade.rate) * xfee
-        btc -= (trade.total or trade.amount * trade.rate)
-      else
-        eth -= trade.amount 
-        btc += (trade.total or trade.amount * trade.rate)
-        btc -= if trade.fee? then trade.fee else (trade.total or trade.amount * trade.rate) * xfee
-
-    pos.expected_profit = eth + btc / exit.rate
-  pos
-
-
-
 ################
 # Conditions for whether to open a position: 
 #
@@ -803,13 +757,6 @@ is_valid_position = (pos) ->
   if entry.amount <= exchange.minimum_order_size() || exit?.amount <= exchange.minimum_order_size()
     return false if !LOG_REASONS
     failure_reasons.push "Can't have a negative amount"
-
-  # Position has to have good returns if simultaneous entry / exit...
-  if entry && exit && settings.min_return?
-    if 100 * pos.expected_profit / exit.amount < settings.min_return  
-      # console.log "#{(pos.expected_return).toFixed(2)}% is not enough expected profit"
-      return false if !LOG_REASONS 
-      failure_reasons.push "#{(pos.expected_return).toFixed(2)}% is not enough expected profit"
 
   # A strategy can't have too many positions on the books at once...
   if !settings.never_exits && open_positions[pos.dealer].length > settings.max_open_positions - 1

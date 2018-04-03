@@ -671,7 +671,7 @@ f.MACD.frames = f.MACD_signal.frames = (args) ->
 f.DI_plus = (engine, args) -> 
   alpha = args.weight or 1
 
-  # t2t = Date.now() if config.log
+  # t2t = Date.now() if config.log_level > 0
   ATR = engine.ATR({t: args.t, weight: alpha})
   v = 100 * engine.DM_plus({t: args.t})
   # by_feature.DI_plus ?= 0
@@ -691,7 +691,7 @@ f.DI_plus = (engine, args) ->
 f.DI_minus = (engine, args) -> 
   alpha = args.weight or 1
 
-  # t2t = Date.now() if config.log
+  # t2t = Date.now() if config.log_level > 0
   ATR = engine.ATR({t: args.t, weight: alpha})
   v = 100 * engine.DM_minus({t: args.t})
   # by_feature.DI_minus ?= 0
@@ -722,7 +722,7 @@ f.DM_plus = (engine, args) ->
   p = args.t
   alpha = args.weight or 1
 
-  # t2t = Date.now() if config.log
+  # t2t = Date.now() if config.log_level > 0
   cur_high = engine.max_price({t: p})
   prev_high = engine.max_price({t: p + 1})
   cur_low = engine.min_price({t: p})
@@ -751,7 +751,7 @@ f.DM_minus = (engine, args) ->
   p = args.t
   alpha = args.weight or 1
 
-  # t2t = Date.now() if config.log
+  # t2t = Date.now() if config.log_level > 0
   cur_high = engine.max_price({t: p})
   prev_high = engine.max_price({t: p + 1})
   cur_low = engine.min_price({t: p})
@@ -785,7 +785,7 @@ f.DM_plus.frames = f.DM_minus.frames = (args) ->
 f.ATR = (engine, args) -> 
   p = args.t
 
-  # t2t = Date.now() if config.log
+  # t2t = Date.now() if config.log_level > 0
 
   cur_high = engine.max_price({t: p})
   cur_low = engine.min_price({t: p})

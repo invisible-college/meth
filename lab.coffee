@@ -176,9 +176,10 @@ simulate = (ts, callback) ->
       save d
     console.timeEnd('saving db')
 
-    console.log "\nDone simulating! That took #{(Date.now() - started_at) / 1000} seconds" if config.log
-    console.log config if config.persist
-    console.log "PORT: #{bus.port}"
+    if config.log_level > 0
+      console.log "\nDone simulating! That took #{(Date.now() - started_at) / 1000} seconds"
+      console.log config if config.persist
+      console.log "PORT: #{bus.port}"
     callback?()
 
   one_tick = ->
@@ -260,7 +261,7 @@ simulate = (ts, callback) ->
 
     #####################
     #### Progress bar
-    if config.log
+    if config.log_level > 0
       t_sec = {}
       for k,v of t_
         t_sec[k] = Math.round(v/1000)
@@ -274,10 +275,7 @@ simulate = (ts, callback) ->
     t_.qtick += Date.now() - t
 
 
-    if true || config.log
-      setImmediate one_tick
-    else 
-      one_tick()
+    setImmediate one_tick
 
   setImmediate one_tick
 
@@ -527,10 +525,6 @@ update_position_status = (end_idx, balance, dealers_with_open) ->
         balance[name].accounted_for.c2 -= amount_fees
         balance[name].accounted_for.c1 -= total_fees
 
-
-
-
-      delete pos.expected_profit
 
       pos.profit = (balance.accounted_for.c1 - cur_c1) / pos.exit.rate + (balance.accounted_for.c2 - cur_c2) 
 
@@ -800,9 +794,11 @@ lab = module.exports =
       offline: false
       auto_shorten_time: true
       deposit_allocation: '50/50'
+      log_level: 1
 
 
     save config 
+
 
     # set globals
     global.position_status = {}
@@ -837,12 +833,12 @@ lab = module.exports =
 
 
       if ts - history_width >= earliest_trade_for_pair        
-        console.log "Running #{Object.keys(dealers).length} dealers" if config.log
+        console.log "Running #{Object.keys(dealers).length} dealers" if config.log_level > 0
 
         history.load_price_data ts - history_width, ts, ->
-          console.log "...loading #{ (history_width / 60 / 60 / 24).toFixed(2) } days of trade history, relative to #{ts}" if config.log
+          console.log "...loading #{ (history_width / 60 / 60 / 24).toFixed(2) } days of trade history, relative to #{ts}" if config.log_level > 0
           history.load ts - history_width, ts, -> 
-            console.log "...experimenting!" if config.log
+            console.log "...experimenting!" if config.log_level > 0
             simulate ts, callback
       else 
         console.log "Can't experiment during that time. The currency pair wasn't trading before the start date."

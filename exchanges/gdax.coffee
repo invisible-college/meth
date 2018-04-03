@@ -21,6 +21,7 @@ public_api =
   getTime: 1
 
 
+
 GDAX_client = (opts, method) ->
   product_id = "#{opts?.c2 or config.c2}-#{opts?.c1 or config.c1}"
 
@@ -43,24 +44,54 @@ write_trades = (hour, trades, c1, c2) ->
 
 
 
+
+
 times_sent = []
-get_wait = -> 
+path = require 'path'
+
+api_call_dir = './.gdax_api_calls'
+if !fs.existsSync api_call_dir
+  fs.mkdirSync api_call_dir
+get_wait = ->
+  # console.time('get_wait')
   noww = Date.now()
+  fname = "#{config.c1}_#{config.c2}_#{bus.port}"
+
   while times_sent.length > 0 && noww - times_sent[0] > 1000
     times_sent.shift()
 
-  if times_sent.length < RATE_LIMIT
+  all_api_calls = times_sent.slice()
+
+  for file in fs.readdirSync api_call_dir
+    if file != fname
+      try
+        other_api_calls = JSON.parse fs.readFileSync(path.join(api_call_dir, file), 'utf8')
+      catch e
+        other_api_calls = []
+      for time in other_api_calls
+        if noww - time < 1000
+          all_api_calls.push time 
+
+  if all_api_calls.length < RATE_LIMIT
     wait_for = 0 
   else 
-    earliest = times_sent[0]
+    earliest = all_api_calls[0]
     
     wait_for = earliest + 1000 - noww
     if wait_for < 0 
       wait_for = 0
 
-  # log the time it *will be* called in the future. This *assumes* the caller will wait for the given amount of time before issuing
+  # Log the time it *will be* called in the future.
+  # This *assumes* the caller will wait for the given amount of time before issuing
   times_sent.push noww + wait_for
+
+  fs.writeFileSync path.join(api_call_dir, fname), JSON.stringify(times_sent), 'utf8' 
+
+  # console.timeEnd('get_wait')
+
   wait_for 
+
+
 
 
 throttle = ({method, productID, opts, cb}) ->
@@ -74,17 +105,16 @@ throttle = ({method, productID, opts, cb}) ->
     callback = (err, response, data) -> 
       lag_logger? now() - ts 
 
-      if data?.message == 'Rate limit exceeded'
-        console.log '***'
+      if data?.message == 'Rate limit exceeded'        
         if Math.random() > .9 && RATE_LIMIT > 1
           RATE_LIMIT--
-          console.log "*-#{RATE_LIMIT}*"
+          console.log "*-#{RATE_LIMIT}*" if config.log_level > 0
         else 
-          console.log '***'
+          console.log '***' if config.log_level > 0
 
       else if RATE_LIMIT < MAX_RATE_LIMIT && Math.random() > .95
         RATE_LIMIT++
-        console.log "*+#{RATE_LIMIT}"
+        console.log "*+#{RATE_LIMIT}" if config.log_level > 0
 
       outstanding_requests -= 1
       cb err, response, data
@@ -218,7 +248,7 @@ load_trades = (opts) ->
 
 
 
-_find_page_for_hour = (productID, hour, current_page, previous_page, callback) -> 
+_find_page_for_hour = (productID, hour, current_page, previous_page, previous_previous_page, callback) -> 
   target_hour = hour + 1
 
   if hour >= current_hour
@@ -255,7 +285,7 @@ _find_page_for_hour = (productID, hour, current_page, previous_page, callback) -
       try 
         process.stdout.clearLine()
         process.stdout.cursorTo 0
-        process.stdout.write "Finding GDAX history for #{config.exchange} #{config.c1}-#{config.c2} #{hour}: #{early_hour}, #{later_hour}, #{current_page}"
+        process.stdout.write "Finding GDAX history for #{config.c1}-#{config.c2} #{hour}: #{early_hour}, #{later_hour}, #{current_page}"
       catch e 
         "probably running in pm2"
 
@@ -267,7 +297,13 @@ _find_page_for_hour = (productID, hour, current_page, previous_page, callback) -
         else 
           next_page = current_page - Math.abs(current_page - previous_page) / 2
 
-        _find_page_for_hour productID, hour, Math.round(next_page), current_page, callback
+
+        next_page = Math.round(next_page)
+
+        if next_page == previous_page # in a cycle!
+          callback(current_page)
+        else 
+          _find_page_for_hour productID, hour, next_page, current_page, previous_page, callback
 
 
   throttle 
@@ -294,7 +330,7 @@ find_page_for_hour = (opts, callback) ->
         cb: cb        
     else 
       current_hour = Math.floor(new Date(data[0].time).getTime() / 1000 / 60 / 60)
-      _find_page_for_hour productID, opts.hour, response.headers['cb-before'], 0, callback 
+      _find_page_for_hour productID, opts.hour, response.headers['cb-before'], 0, -10, callback 
 
   throttle 
     method: 'getProductTrades' 
@@ -358,13 +394,21 @@ load_chart_data = (opts, callback) ->
 
 
 update_orderbook = (cb, print_status) ->
-  ob = orderbook.books["#{config.c2}-#{config.c1}"].state() 
+  market = "#{config.c2}-#{config.c1}"
+  if !(orderbook?.books[market])
+    # orderbook not ready yet!
+    console.error "Orderbook not ready yet, waiting..."
+    return  setTimeout -> 
+              update_orderbook cb, print_status
+            , 100
+
+
+  ob = orderbook.books[market].state() 
   bids = ob.bids 
   asks = ob.asks 
 
-  if !ob.bids || !ob.asks
-    return cb(null)
-
+  if !ob.bids || !ob.asks || ob.bids.length == 0 || ob.asks.length == 0 
+    return cb?(null)
 
   first_bid = BigNumber(bids[0].price).toNumber()
   first_ask = BigNumber(asks[0].price).toNumber()
@@ -410,23 +454,39 @@ update_orderbook = (cb, print_status) ->
 
     console.log "SPREAD: ", first_ask - first_bid
 
-  cb ob_state
+  if cb 
+    cb ob_state
 
 
 
 
-update_rate = (opts, cb) -> 
+ob_history = []
+
+global.update_rate = (amt, type, post_only, order_method, cb) -> 
 
   update_orderbook (ob) -> 
+    if type == 'buy'
+      new_rate = ob.first_bid.rate
+      if !post_only && order_method == 3 && ob.first_bid.amt < .25 * amt
+        new_rate += gdax.minimum_rate_diff()
+    else 
+      new_rate = ob.first_ask.rate
+      if !post_only && order_method == 3 && ob.first_ask.amt < .25 * amt
+        new_rate -= gdax.minimum_rate_diff()        
 
-    # reset rate based on last observed trade
+
     last_trade = history.last_trade
-    new_rate = last_trade.rate 
-    if      opts.type == 'buy' && last_trade.type == 'sell'
-      new_rate -= gdax.minimum_rate_diff()
-    else if opts.type == 'sell' && last_trade.type == 'buy'
-      new_rate += gdax.minimum_rate_diff()
-    new_rate = parseFloat new_rate.toFixed(gdax.minimum_rate_precision())
+    if last_trade.rate < ob.first_bid.rate || last_trade.rate > ob.first_ask.rate 
+      console.error "Trade & orderbook discrepency: #{ob.first_bid.rate}  <#{last_trade.rate}>  #{ob.first_ask.rate}  (ob=#{Date.now() - global.orderbook.last_message} tr=#{Date.now() - history.ws_trades.last_message})"
+    # else 
+    #   console.log "Trade & orderbook: #{ob.first_bid.rate}  <#{last_trade.rate}>  #{ob.first_ask.rate}  (ob=#{Date.now() - global.orderbook.last_message} tr=#{Date.now() - history.ws_trades.last_message})"
+
+    if ob.first_bid.rate >= ob.first_ask.rate 
+      log_error false, {message: "Possible stale orderbook, one side is out of whack", ob, last_trade}
+
+    ob_history.push ob 
+    # console.log 'UPDATING RATE', {type, last_trade_type: last_trade.type, new_rate, new_rate_rounded: parseFloat(new_rate.toFixed(gdax.minimum_rate_precision()))}
+    # new_rate = parseFloat new_rate.toFixed(gdax.minimum_rate_precision())
 
     cb 
       rate: new_rate
@@ -455,15 +515,16 @@ module.exports = gdax =
     console.assert config.c1 of mins 
     mins[config.c1]
 
-  minimum_rate_precision: -> 
+  minimum_rate_precision: (currency) ->
+    currency ?= config.c1 
     mins = 
       BTC: 5
       USD: 2
       EUR: 2
       GBP: 2
 
-    console.assert config.c1 of mins 
-    mins[config.c1]
+    console.assert currency of mins 
+    mins[currency]
 
 
   all_clear: -> outstanding_requests == 0 
@@ -541,7 +602,83 @@ module.exports = gdax =
       callback(transformed)
 
 
-  subscribe_to_trade_history: (opts, callback) -> 
+  subscribe_to_orderbook: -> 
+
+    handle = (ob) ->
+
+      close_ob = -> 
+        if ob.syncing_intv && global.syncing_orderbook
+          clearInterval ob.syncing_intv
+          ob.syncing_intv = null
+          global.syncing_orderbook.disconnect()
+          global.syncing_orderbook = null
+        if ob.status_intv
+          clearInterval ob.status_intv
+          ob.status_intv = null
+
+      ob.on 'close', ->
+        if ob.socket           
+          ob.disconnect()
+          close_ob()
+          setTimeout gdax.subscribe_to_orderbook, 100
+      ob.on 'error', (err) -> 
+        log_error false, "Orderbook #{ob.id} connection got an err:", ob, err.message, err
+        if err.message == 'unexpected server response (429)'
+          process.exit()
+        else 
+          close_ob()
+          ob.disconnect()  
+          setTimeout gdax.subscribe_to_orderbook, 1000
+
+      ob.on 'message', (msg) -> ob.last_message = Date.now()
+
+      ob.on 'open', -> 
+        console.log "Orderbook #{ob.id} websocket opened ", Date.now()
+        ob.status_intv = setInterval ->
+          if !ob.socket || (ob != global.orderbook && ob != global.syncing_orderbook)
+            clearInterval ob.status_intv
+            ob.status_intv = null
+            if ob.socket && (ob != global.orderbook && ob != global.syncing_orderbook)
+              ob.disconnect()
+            return 
+          if ob.last_message? && Date.now() - ob.last_message > 5000 && !global.syncing_orderbook
+            # We need to reconnect
+            log_error false, "Restarting orderbook because #{ob.id} hasn't received messages in #{Date.now() - ob.last_message}ms"
+            clearInterval ob.status_intv
+            ob.status_intv = null
+            gdax.subscribe_to_orderbook()
+            return
+          ob.status = on_deck._sequences[market]
+        , 2500
+
+
+
+    console.assert !global.syncing_orderbook
+    market = "#{config.c2}-#{config.c1}"
+    on_deck = global.syncing_orderbook = new Gdax.OrderbookSync([market])
+    on_deck.id = (global.orderbook?.id or 0) + 1
+    console.log "Creating new orderbook #{on_deck.id}"
+
+    on_deck.syncing_intv = setInterval -> 
+      if !on_deck.status || on_deck.status < 0
+        return
+
+      console.log "Orderbook synced #{on_deck.id}!"
+      # ok! this orderbook is ready
+      old = global.orderbook 
+      global.orderbook = on_deck 
+      global.syncing_orderbook = null 
+      clearInterval on_deck.syncing_intv
+
+      if old 
+        old.disconnect()
+        if old.status_intv
+          clearInterval old.status_intv
+    , 100
+    handle on_deck
+
+
+  subscribe_to_exchange_feed: (opts, callback) -> 
 
 
     create_connection = -> 
@@ -555,13 +692,18 @@ module.exports = gdax =
         setTimeout create_connection, 500
         return
 
-      reconnect = -> 
+      connection.destroy = -> 
         try 
+          connection.terminated_on_purpose = true
           if connection.keepAliveId
             clearInterval connection.keepAliveId
           connection.terminate()
         catch e 
           console.log "Couldn't terminate connection. Proceeding."
+
+      connection.reset = reconnect = -> 
+        return if connection.terminated_on_purpose
+        connection.destroy()
 
         setTimeout ->
           console.log '...trying to reconnect'
@@ -576,20 +718,26 @@ module.exports = gdax =
       connection.onopen = (e) ->
 
         connection.keepAliveId = setInterval -> 
+          return if connection.terminated_on_purpose
+          if Date.now() - connection.last_message > 10 * 60 * 1000
+            log_error false, {message: "Trade feed unresponsive for too long, reconnecting!", last_msg: Date.now() - connection.last_message}
+            global.restart_when_possible = true
+            return reconnect()
+
           try 
             connection.ping('keepalive')
           catch e
             console.log "Websocket ping failed!", e 
             reconnect()
-        , 30000
+        , 10000
 
-        console.log '...engine is now receiving live updates'
+        # console.log '...engine is now receiving live updates'
         lag_logger?(99999)
 
-        connection.send JSON.stringify({type: 'subscribe', product_ids: ["#{config.c2}-#{config.c1}"]}), (error) ->
+        connection.send JSON.stringify({type: 'subscribe', channels: ['matches', 'heartbeat'], product_ids: ["#{config.c2}-#{config.c1}"]}), (error) ->
           reconnect() if error 
 
-        callback()
+        callback(connection)
 
       connection.onmessage = (msg) ->
         if !msg || !msg.data 
@@ -601,33 +749,34 @@ module.exports = gdax =
         if data.type == 'error'
           console.error "Websocket got an error", data
 
-        if data.type != 'match'
-          return 
 
-        trade = 
-          rate: parseFloat(data.price)
-          amount: parseFloat(data.size)
-          total: parseFloat(data.price) * parseFloat(data.size)
-          date: new Date(data.time).getTime() / 1000
-          tradeID: data.trade_id
-          type: data.side
+        if data.type == 'match'
+          trade = 
+            rate: parseFloat(data.price)
+            amount: parseFloat(data.size)
+            total: parseFloat(data.price) * parseFloat(data.size)
+            date: new Date(data.time).getTime() / 1000
+            tradeID: data.trade_id
+            type: data.side
 
-        opts.new_trade_callback trade 
+          opts.new_trade_callback trade 
+
+        connection.last_message = Date.now()
 
       connection.onclose = (msg) -> 
-        console.log '...lost connection to live feed from exchange',
-          event: msg 
-        
-        reconnect()
+        if !connection.terminated_on_purpose
+          console.log '...lost connection to live feed from exchange',
+            event: msg 
+          
+          reconnect()
 
       connection.onerror = (err) ->
         console.error('error from gdax:', err) 
 
+    gdax.subscribe_to_orderbook()
     create_connection()
 
 
-    # also start orderbook sync
-    global.orderbook = new Gdax.OrderbookSync(["#{config.c2}-#{config.c1}"])
 
   get_trade_history: (opts, callback) -> 
     hour = Math.floor (opts.start + 1) / 60 / 60
@@ -657,6 +806,9 @@ module.exports = gdax =
     cb = (error, response, data) ->
       if error || !data || data.message
 
+        if response?.statusCode == 404
+          console.error {message: "getOrder got 404. Order probably was canceled with no fills", order_id}
+          return callback {error: "Not found"}
         if data?.message != 'Rate limit exceeded'
           console.error {message: "error getting order, trying again", error: error, message: data?.message}
 
@@ -687,11 +839,17 @@ module.exports = gdax =
           fee: parseFloat(fill.fee)
           date: new Date(fill.created_at).getTime() / 1000
           maker: fill.liquidity == 'M'
+
       callback fills
 
     args = 
-      product_id: "#{opts.c2}-#{opts.c1}"
-      start: opts.start
+      product_id: "#{opts.c2 or config.c2}-#{opts.c1 or config.c1}"
+
+    if opts.order_id?
+      args.order_id = opts.order_id 
+
+    if opts.start?
+      args.start = opts.start 
 
     depaginated_request 'getFills', args, cb
 
@@ -748,6 +906,8 @@ module.exports = gdax =
 
 
   get_my_exchange_fee: (opts, callback) -> 
+    
+
     callback 
       maker_fee: 0.002
       taker_fee: 0.003
@@ -770,31 +930,51 @@ module.exports = gdax =
       else 
         amount = params.funds = parseFloat (Math.floor(opts.amount * rate * 1000000) / 1000000).toFixed(6)
 
-      if amount < gdax.minimum_order_size[config.c2] && !opts.flags?.market
-        return callback {error: 'Too small of an order'}
+      if (amount < gdax.minimum_order_size[config.c2]) && !opts.flags?.market
+        return callback {error: "Too small of an order (#{amount}<#{gdax.minimum_order_size[config.c2]})"}
 
       params.price = rate
       
       cb = (error, response, data) ->
-        console.log 'place order GOT', data
+        console.log 'place order GOT', data if config.log_level > 1
 
         if error || !data || data.message || !response || data?.status == 'rejected'
 
-          if data?.message != 'Rate limit exceeded'
+          if data?.status == 'rejected'
+            ob = from_cache 'orderbook'
+
+            if config.log_level > 0
+              console.log "Order was rejected. Either last trade or order book might be stale!", 
+                last_trade: history.last_trade
+                first_ask: ob.first_ask
+                first_bid: ob.first_bid
+
+
+
+          if data?.message != 'Rate limit exceeded' && config.log_level > 0
             console.error "error carrying out #{opts.type}",
               error: error
               message: data?.message
               status: data?.status
           
           if data?.message?.indexOf('Order size is too small') > -1
-            console.log 'Not trying again. Order size is too small.'
+            console.log 'Not trying again. Order size is too small.' if config.log_level > 0
             callback {error: data.message}
 
           else
-            console.log 'Trying again.'
+            console.log 'Trying again.' if config.log_level > 0 
             return gdax.place_order opts, callback
           
         else 
+          latest_trades = []
+          idx = 0
+          while idx < history.trades.length
+            t = history.trades[idx]
+            if tick.time - t.date > 10 * 60 * 60
+              break
+            idx += 1
+
+
           callback 
             order_id: data.id
             error: data.error
@@ -805,9 +985,10 @@ module.exports = gdax =
               first_bid: 
                 rate: order_book?.first_bid?.rate 
                 amt: order_book?.first_bid?.amt
+              latest_trades: latest_trades
 
 
-      console.log 'PLACING ORDER', params
+      console.log 'PLACING ORDER', params if config.log_level > 0
 
 
       throttle 
@@ -816,7 +997,7 @@ module.exports = gdax =
         cb: cb 
 
     if opts.flags?.auto_adjust
-      update_rate opts, place 
+      update_rate opts.amount, opts.type, params.post_only, opts.flags.order_method, place 
     else 
       place {rate: opts.rate}
 
@@ -826,72 +1007,161 @@ module.exports = gdax =
 
 
 
-  dynamic_place_order: (opts, callback) -> 
-    params = 
-      product_id: "#{opts.c2}-#{opts.c1}"
-      type: if opts.flags?.market then 'market' else 'limit'
-      post_only: if opts.flags?.post_only? then opts.flags.post_only
+  dynamic_place_order: (opts, placed_callback, updated_callback, finished_callback) -> 
 
-    place = ({rate, order_book}) -> 
+    pos = opts.pos
+    trade = refresh pos, opts.trade 
 
-      # reset amount based on new rate and old rate/amount if we're buying (can keep same amount if selling)
-      if opts.type == 'buy' && opts.rate != rate 
-        opts.amount = opts.amount * opts.rate / rate
 
-      if !(opts.flags?.market && opts.type == 'buy')
-        amount = params.size = parseFloat opts.amount.toFixed(8)
+    gdax.place_order opts, ({order_id, error, info}) -> 
+      placed_callback {order_id, error, info} # this should be the normal callback pipeline from operation / pusher place order
+      
+      if error
+        console.log 'GOT ERROR PLACING DYNAMIC ORDER', {opts} if config.log_level > 0
       else 
-        amount = params.funds = parseFloat (Math.floor(opts.amount * rate * 1000000) / 1000000).toFixed(6)
+        # At this point, we know that an order is on the books. 
+        # Now we'll monitor it until it is complete, re-placing the order
+        # as necessary
 
-      if amount < gdax.minimum_order_size[config.c2] && !opts.flags?.market
-        return callback {error: 'Too small of an order'}
+        trade = refresh pos, opts.trade
+        if !(trade.current_order && trade.original_rate? && trade.original_amt? && trade.fills?)  
+          console.assert false, {message: "trade doesn't have correct settings after placing", order_id, error, info, trade, pos} 
+        console.log 'DYNAMIC ORDER: PLACED', {trade} if config.log_level > 1
 
-      params.price = rate
-      
-      cb = (error, response, data) ->
-        console.log 'place order GOT', data
+        gdax.dynamic_move_order {trade, pos}, updated_callback, finished_callback
 
-        if error || !data || data.message || !response || data?.status == 'rejected'
+  dynamic_move_order: ({trade, pos}, updated_callback, finished_callback) -> 
+    locked = false 
+    victory = ->
+      clearInterval intv
+      console.log 'DYNAMIC ORDER: VICTORY!!!!' if config.log_level > 1
+      finished_callback()
 
-          if data?.message != 'Rate limit exceeded'
-            console.error "error carrying out #{opts.type}",
-              error: error
-              message: data?.message
-              status: data?.status
-          
-          if data?.message?.indexOf('Order size is too small') > -1
-            console.log 'Not trying again. Order size is too small.'
-            callback {error: data.message}
+    intv = setInterval -> 
+      return if locked
+      locked = true
 
-          else
-            console.log 'Trying again.'
-            return gdax.place_order opts, callback
-          
-        else 
-          callback 
-            order_id: data.id
-            error: data.error
-            info: 
-              first_ask: 
-                rate: order_book?.first_ask?.rate 
-                amt: order_book?.first_ask?.amt 
-              first_bid: 
-                rate: order_book?.first_bid?.rate 
-                amt: order_book?.first_bid?.amt
+      update_rate trade.amount, trade.type, trade.flags?.post_only, trade.flags?.order_method, ({rate, order_book}) ->  
+        trade = refresh pos, trade
+
+        if trade.rate == rate 
+          locked = false
+        else
+          #console.log 'DYNAMIC ORDER: RATE HAS CHANGED!', {rate}
+
+          console.assert trade.current_order && trade.original_rate? && trade.original_amt? && trade.fills?, {message: "trade doesn't have correct settings before re-placing", order_id, trade} 
+
+          order_id = trade.current_order
+          gdax.cancel_order {order_id}, (data) -> 
+
+            trade = refresh pos, trade
+            console.log 'DYNAMIC ORDER: CANCELED', data if config.log_level > 1
+
+            if data?.error == 'Order already done'
+              # console.log 'DYNAMIC ORDER: Cannot cancel because order is already done'
+              return victory()
+            else 
+              console.log 'Done canceling now updating order info', data if config.log_level > 1
+              trade.current_order = null 
+              bus.save pos
+
+            gdax.get_order order_id, (order_data) -> 
+              # sometimes GDAX apparently doesn't return fills promptly, so we try to cross check 
+              # it with the result of get_order, which has a "filled_size" property
+              filled_size_from_order = if order_data.error == 'Not found' then 0 else order_data.filled_size
+
+              fills_callback = (fills) -> 
+                filled_size = 0
+                for new_fill in fills
+                  filled_size += new_fill.amount 
+
+                if filled_size < filled_size_from_order
+                  log_error false, 
+                    message: "Filled size from getFills does not match Filled Size from getOrder "
+                    order_id: order_id 
+                    filled_size: filled_size
+                    filled_size_from_order: filled_size_from_order
+                    order_data: order_data
+                    fills: fills 
+
+                  # try again...
+                  return gdax.get_my_fills {order_id: order_id}, fills_callback
 
 
-      console.log 'PLACING ORDER', params
+                trade = refresh pos, trade
+
+                console.log 'DYNAMIC ORDER: GOT FILLS', fills if config.log_level > 1
+                # add fills to trade
+                for new_fill in fills
+                  already_processed = false 
+                  for old_fill in trade.fills
+                    already_processed = old_fill.fill_id == new_fill.fill_id
+                    break if already_processed
+                  continue if already_processed
+                  new_fill.type = trade.type
+                  new_fill.slippage = new_fill.amount * Math.abs(new_fill.rate - trade.original_rate) / trade.original_rate
+                  trade.fills.push new_fill
+                
+                bus.save pos 
+
+                update_rate trade.amount, trade.type, trade.flags?.post_only, trade.flags?.order_method, ({rate, order_book}) ->
+                  trade = refresh pos, trade
+
+                  # TODO: validate whether rates that are detected as different are actually different!
+                  r = rate 
+                  rate = parseFloat rate.toFixed(gdax.minimum_rate_precision())
+                  console.log 'DYNAMIC ORDER: new rates', {r, rate, tr: trade.rate, trade} if config.log_level > 1
+
+                  # determine how much more I need to order
+                  amt_purchased = 0 
+                  for f in (trade.fills or [])
+                    amt_purchased += f.amount
+
+                  trade.to_fill = trade.original_amt - amt_purchased
+                  if trade.type == 'buy'
+                    # we need to adjust the *amount* we're buying because our buying power has changed
+                        
+                    total_remaining = trade.to_fill * trade.original_rate
+                    new_amount = total_remaining / rate 
+                    trade.amount = new_amount + amt_purchased
+                    trade.to_fill = new_amount 
+                    
+
+                  trade.rate = rate 
+                  bus.save pos 
+
+                  if isNaN(trade.to_fill)
+                    console.assert false, "DYNAMIC ORDER: NEW AMOUNT is NaN!", trade.to_fill, trade
+
+                  if trade.to_fill < gdax.minimum_order_size[config.c2] || \
+                     trade.to_fill * rate < gdax.minimum_order_size[config.c1]
+                    return victory()
 
 
-      throttle 
-        method: opts.type 
-        opts: params 
-        cb: cb 
+                  args = 
+                    rate: rate
+                    amount: trade.to_fill
+                    type: trade.type
+                    c1: config.c1 
+                    c2: config.c2
+                    flags: trade.flags
 
-    if opts.flags?.auto_adjust
-      update_rate opts, place 
-    else 
-      place {rate: opts.rate}
+                  # console.log "DYNAMIC ORDER: Done canceling and updating order info, now placing:", args
+                  gdax.place_order args, (result) -> 
+                    locked = false
+                    updated_callback result
+              
+
+              gdax.get_my_fills {order_id: order_id}, fills_callback
+
+
+
+
+
+
+    , 100
+
+
 
 
 
@@ -906,13 +1176,14 @@ module.exports = gdax =
 
       if error || !data || data.message || !response
 
-        if data?.message != 'Rate limit exceeded'
+        if data?.message not in ['Rate limit exceeded', 'Order already done'] && config.log_level > 0
           console.error "error carrying out cancel",
             error: error
             message: data?.message
-        
-        if data.message == 'Order already done'
-          console.log 'Not trying again. Returning to execution'
+            opts: opts        
+
+        if data.message in ['Order already done', 'order not found']
+          console.log 'Not trying again. Returning to execution' if config.log_level > 1
           callback {error: data.message}
         else # retry
           throttle 
@@ -921,7 +1192,7 @@ module.exports = gdax =
             cb: cb 
 
       else
-        console.log 'cancel got', data
+        console.log 'cancel got', data if config.log_level > 1
         callback data
 
     throttle 
@@ -936,18 +1207,18 @@ module.exports = gdax =
     gdax.cancel_order {order_id: opts.order_id}, (data) -> 
 
       if data?.message == 'Order already done'
-        console.log 'Cannot cancel because order is already done'
+        console.log 'Cannot cancel because order is already done' if config.log_level > 1
         callback 
           error: 'Order already done'
       else 
-        console.log 'Done canceling now placing:', opts
+        console.log 'Done canceling now placing:', opts if config.log_level > 1
         gdax.place_order opts, callback 
 
 
 
 # currently assumes that method returns reverse-chronologically array of objects with a created_at field
 depaginated_request = (method, opts, callback) -> 
-
+  
   all_data = []
 
   cb = (error, response, data) ->

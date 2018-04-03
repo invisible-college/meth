@@ -1,4 +1,6 @@
 require './shared'
+fs = require 'fs'
+path = require 'path'
 
 default_features = require './features'
 
@@ -123,7 +125,7 @@ feature_engine = module.exports =
         last_frame_w = 100
         a = last_boundary = trade_idx 
         frame_boundaries = []
-        #t1t = Date.now() if config.log
+        #t1t = Date.now() if config.log_level > 0
         for frame_boundary in [0..num_frames - 1]
           if a >= num_trades - 1
             a = num_trades - 2
@@ -205,7 +207,7 @@ feature_engine = module.exports =
       
       frame: (i) ->
         if !engine.frames[i]?
-          # t2t = Date.now() if config.log
+          # t2t = Date.now() if config.log_level > 0
           boundary = engine.frame_boundaries[i]
           engine.frames[i] = engine.trades.slice(boundary[0], boundary[1])
           # t_.z += Date.now() - t2t if t_?
@@ -225,10 +227,35 @@ feature_engine = module.exports =
       latest_trade: -> 
         engine.trades[engine.trade_idx]
 
+      write_to_disk: -> 
+        cache_dir = './.feature_cache'
+        if !fs.existsSync cache_dir
+          fs.mkdirSync cache_dir
+
+        fname = "#{config.exchange}-#{config.c1}-#{config.c2}-#{bus.port}-#{engine.resolution}.json"
+        fs.writeFileSync path.join(cache_dir, fname), JSON.stringify({next_cache: engine.next_cache, ticked_at: engine.ticked_at})
+
+      load_from_disk: -> 
+        cache_dir = './.feature_cache'
+        if !fs.existsSync cache_dir
+          fs.mkdirSync cache_dir
+
+        fname = "#{config.exchange}-#{config.c1}-#{config.c2}-#{bus.port}-#{engine.resolution}.json"
+        if fs.existsSync path.join(cache_dir, fname)
+          try 
+            from_file = fs.readFileSync(path.join(cache_dir, fname), 'utf8')
+            data = JSON.parse(from_file)
+            engine.cache = data.next_cache
+            engine.ticked_at = data.ticked_at
+          catch e 
+            console.error {message: "Could not load cache from file", fname, e}
+
     
     feature_engine.resolutions[resolution] = engine
     engine.reset() 
     engine
+
+
 
 
 
@@ -304,21 +331,12 @@ initialize_feature = (engine, name, func) ->
       idx -= 1
 
     if Math.abs(right_now - right_nowish) > pusher.tick_interval
-      # console.log
-      #   message: 'requesting value not in cache, returning null'
-      #   key: key 
-      #   args: args
-      #   name: name
-      #   right_now: right_now
+      console.log "Not in cache: #{name}", {right_now, right_nowish, tick_interval: pusher.tick_interval, ticked_at: e.ticked_at, idx}  if config.log_level > 1
       return null
-
-
-
 
     cache = e.cache[name]
     next_cache = e.next_cache[name]
     resolution = e.resolution
-
 
     t = args?.t or 0
     t2 = args?.t2 or t
@@ -331,23 +349,15 @@ initialize_feature = (engine, name, func) ->
 
     key = "#{right_now - t * resolution}-#{right_now - t2 * resolution}-#{weight}-#{vel_weight}-#{short_resolution}-#{MACD_weight}-#{eval_entry_every_n_seconds}-#{MACD_feature}"
 
-
     val = cache[key]
     if !val?
-      # console.log
-      #   message: 'requesting value not in cache, returning null'
-      #   key: key 
-      #   args: args
-      #   name: name
-      #   right_now: right_now
+      console.log "Not in cache: #{name} #{key}" if config.log_level > 1
       return null
 
     if !(key of next_cache)
       next_cache[key] = val
+
     val
-
-
-
 
   computer
 

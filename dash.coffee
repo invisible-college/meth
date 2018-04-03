@@ -106,11 +106,11 @@ dom.BODY = ->
           show_by_default: false
           render: -> ACTIVITY key: 'table'
 
-        SECTION 
-          key: 'misc_analysis'
-          name: "Misc. Analysis"
-          show_by_default: false 
-          render: -> PRICE_TRAJECTORY_OF_OPEN_POSITIONS()
+        # SECTION 
+        #   key: 'misc_analysis'
+        #   name: "Misc. Analysis"
+        #   show_by_default: false 
+        #   render: -> PRICE_TRAJECTORY_OF_OPEN_POSITIONS()
 
 dom.BODY.refresh = ->
 
@@ -1576,8 +1576,6 @@ dom.SELECT_PARAMS = ->
 
       ['Completed', (p) -> format p, false, true,  (s) -> indicators.completed(s,stats) ]
       ['Success',   (p) -> format p, false, false,  (s) -> indicators.success(s,stats) ]     
-      ['Not reset', (p) -> format p, false, false,  (s) -> "#{indicators.not_reset(s,stats)}"]            
-
 
       ['μ duration', (p) -> format p, true, false,  (s) -> indicators.avg_duration(s,stats)]      
       ['x͂ duration', (p) -> format p, true, false,  (s) -> indicators.median_duration(s,stats)]      
@@ -1786,7 +1784,7 @@ dom.ACTIVITY = ->
             "#{pos.exit.type} #{pos.exit.amount.toFixed(3)} #{if pos.exit.to_fill > 0 && pos.exit.fills.length > 0 then (pos.exit.amount - pos.exit.to_fill).toFixed(3) else ''} @ #{pos.exit.rate.toFixed(5)}"
       ]
       ['Earnings', (pos) -> 
-        if pos.exit then "#{(pos.profit or pos.expected_profit)?.toFixed(3)} (#{(100 * (pos.profit or pos.expected_profit) / ((pos.exit.amount + pos.entry.amount) / 2 ) )?.toFixed(2)}%)" else '?']
+        if pos.exit then "#{pos.profit?.toFixed(3)} (#{( (100 * pos.profit) / ((pos.exit.amount + pos.entry.amount) / 2 ) )?.toFixed(2)}%)" else '?']
 
     ]
 

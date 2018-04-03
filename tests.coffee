@@ -24,7 +24,7 @@ test_trade_integrity = ->
 
   start = now()
 
-  websocket_history.subscribe_to_trade_history ->
+  websocket_history.subscribe_to_exchange_feed ->
     console.log 'subscribed to websocket'
 
   poll_trades = ->
