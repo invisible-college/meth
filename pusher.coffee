@@ -254,8 +254,6 @@ find_opportunities = (balance) ->
     if dealer_data.locked 
       locked_for = tick.time - dealer_data.locked
       console.log "Skipping #{name} because it is locked (locked for #{locked_for}s)"
-      if locked_for > 60 * 60 && locked_for < 68 * 60
-        log_error false, {message: "#{name} locked an excessive period of time.", dealer_data, locked_for}
       continue
 
     pusher.last_checked_new_position[name] = tick.time
@@ -384,7 +382,8 @@ find_opportunities = (balance) ->
         continue if dealer_data.locked 
         continue if config.exchange == 'gdax' && \
                     unfilled.flags?.order_method > 1 && \
-                    unfilled.latest_order > tick.started  # make sure trades don't get stuck if there's a restart
+                    unfilled.latest_order > tick.started && \ # make sure trades don't get stuck if there's a restart
+                    unfilled.current_order
                   # because we're in the midst of a dynamically-updating order
 
       opportunity = dealer.eval_unfilled_trades
@@ -421,6 +420,7 @@ find_opportunities = (balance) ->
 
 execute_opportunities = (opportunities) -> 
   return if !opportunities || opportunities.length == 0 
+
 
   for opportunity in opportunities
     pos = opportunity.pos 
@@ -544,7 +544,7 @@ create_position = (spec, dealer) ->
 
 exit_position = ({pos, opportunity}) ->
   if !pos.entry 
-    log_error true, 
+    log_error false, 
       message: 'position can\'t be exited because entry is undefined'
       pos: pos
       opportunity: opportunity
@@ -584,8 +584,8 @@ take_position = (pos) ->
     took_position pos
 
 took_position = (pos, error, destroy_if_all_errored) -> 
-  if !pos.series_data 
-    console.log "TOOK POSITION", pos, {error, destroy_if_all_errored}
+  if !pos.series_data && config.log_level > 1
+    console.log "TOOK POSITION", pos, {error, destroy_if_all_errored} 
   if error && !config.simulation
     for trade in ['entry', 'exit'] when pos[trade]
 
@@ -620,7 +620,7 @@ update_trade = ({pos, trade, opportunity}) ->
     rate = parseFloat rate.toFixed(exchange.minimum_rate_precision())
 
   if isNaN(rate) || !rate || rate == 0
-    return log_error true, 
+    return log_error false, 
       message: 'Bad rate for updating trade!',
       rate: rate 
       pos: pos 
@@ -645,6 +645,27 @@ update_trade = ({pos, trade, opportunity}) ->
       amt_purchased += f.amount
     amt_remaining = (trade.original_amt or trade.amount) - amt_purchased    
     total_remaining = amt_remaining * (trade.original_rate or trade.rate)
+
+    dbalance = from_cache('balances')[pos.dealer]
+    total_available = dbalance.balances.c1 + dbalance.on_order.c1
+
+
+    dealer = from_cache(pos.dealer)
+    total_amt_purchased = 0
+    total_amt_sold = 0 
+    for pos in (dealer.positions or []) 
+      for t in [pos.entry, pos.exit] when t 
+        for fill in (t.fills or []) 
+          if t.type == 'buy'
+            total_amt_purchased += fill.amount 
+          else 
+            total_amt_sold += fill.amount 
+    total_diff = total_amt_purchased - total_amt_sold
+
+    if total_remaining > .99 * total_available
+      # console.error 'total remaining was too much!', {dealer: pos.dealer, total_diff, amt_remaining, amt_purchased, total_available, total_remaining, orig_amt: trade.original_amt, orig_rate: trade.original_rate, rate, balance: from_cache('balances')[pos.dealer]}
+      total_remaining = .99 * total_available
+
     new_amount = total_remaining / rate 
   else 
     new_amount = trade.to_fill
@@ -702,9 +723,8 @@ destroy_position = (pos) ->
   positions = from_cache(pos.dealer).positions
   open = open_positions[pos.dealer]
 
-  if !config.simulation
-    if !pos.key 
-      return log_error true, {message: 'trying to destroy a position without a key', pos: pos}
+  if !config.simulation && !pos.key 
+    return log_error true, {message: 'trying to destroy a position without a key', pos: pos}
 
   idx = positions.indexOf(pos)
   if idx == -1
@@ -791,6 +811,47 @@ is_valid_position = (pos) ->
   return true #failure_reasons.length == 0 
 
 
+
+global.close_trade = (pos, trade) -> 
+  amount = total = 0
+  c1_fees = c2_fees = 0
+  last = null
+
+  for fill in (trade.fills or [])
+    total += fill.total
+    amount += fill.amount
+
+    if trade.type == 'buy' && config.exchange == 'poloniex'
+      c2_fees += fill.fee
+    else 
+      c1_fees += fill.fee
+
+    if fill.date? && fill.date > last 
+      last = fill.date
+
+  extend trade, {amount, total, c1_fees, c2_fees}
+  trade.to_fill = 0 
+  trade.closed = last or tick.time
+  trade.rate = total / amount
+
+  if trade.original_rate?
+    original_rate = trade.original_rate
+    original_amt = trade.original_amt or trade.amount
+
+    rate_before_fee = total / amount
+    rate_after_fee =  (total - c1_fees) / (amount - c2_fees)
+
+    slipped = Math.abs( original_rate - rate_before_fee ) / original_rate
+    slipped_amt = slipped * original_amt
+    
+    overhead = Math.abs(original_rate - rate_after_fee) / original_rate
+    overhead_amt = original_amt * overhead
+
+    extend trade, {slipped, slipped_amt, overhead, overhead_amt}
+
+
+
+
 action_priorities =
   create: 0
   exit: 1
@@ -818,7 +879,7 @@ hustle = (balance) ->
     #   # for op in opportunities
     #   #   if op not in fillable_opportunities
     #   #     console.log 'ELIMINATED:', op.pos.dealer
-    if fillable_opportunities.length > 0 && !config.disabled
+    if fillable_opportunities.length > 0 && !config.disabled && !global.no_new_orders
       execute_opportunities fillable_opportunities
 
     t_.exec += Date.now() - yyy if t_?

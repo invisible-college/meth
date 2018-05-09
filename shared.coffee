@@ -57,7 +57,7 @@ module.exports =
       for dealer in strategy.dealers
         settings = get_settings(dealer)
         loaded &&= settings?
-        if !settings? || !settings.series
+        if settings? && !settings.series
           dealer = if is_server() then deslash(dealer) else dealer
           
           console.assert dealer != 'all', 
@@ -65,7 +65,6 @@ module.exports =
             name: name 
             strategy: strategy
             dealer: dealer
-
 
           dealers.push dealer
 

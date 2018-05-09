@@ -9,24 +9,18 @@ module.exports = history =
   trades: []
 
 
-  load_price_data: (start, end, callback, callback_empty) -> 
+  load_price_data: ({start, end, callback}) -> 
     granularity = config.price_data_granularity or 86400
 
     fs.mkdirSync "price_data/" if !fs.existsSync("price_data/") 
     fs.mkdirSync "price_data/#{config.exchange}" if !fs.existsSync("price_data/#{config.exchange}")
-
-    proceed = true 
-    cb_empty = (interval) -> 
-      if callback_empty
-        callback_empty(interval)
-        proceed = false
 
     done = => 
       # now we're going to verify the integrity of the price data
       price_data = fetch 'price_data'
 
       patch = (idx, pair, min_date) -> 
-        console.log "Patching #{pair} candle at index #{idx} of #{price_data[pair].length}" if config.log_level > 0
+        console.log "Patching #{pair} candle at index #{idx} of #{price_data[pair].length}" if config.log_level > 1
 
         copy_from_idx = if idx == 0 then 0 else idx - 1
         cpy = bus.clone(price_data[pair][copy_from_idx])
@@ -51,47 +45,41 @@ module.exports = history =
           equal
 
         if !equal_lengths()
-          console.log "Price data needs patching" if config.log_level > 0
+          console.log "Price data needs patching" if config.log_level > 1
 
-          if config.disable_price_patching
-            console.log "retrying" if config.log_level > 0
-            setTimeout load_history, 1000
-            return
-          else 
+          i = 0 
+          cnt = 0 
+          while true
+            c1_date = price_data.c1[i]?.date
+            c2_date = price_data.c2[i]?.date 
+            cx_date = price_data.c1xc2[i]?.date
 
-            i = 0 
-            cnt = 0 
-            while true
-              c1_date = price_data.c1[i]?.date
-              c2_date = price_data.c2[i]?.date 
-              cx_date = price_data.c1xc2[i]?.date
+            break if !c1_date && !c2_date && !cx_date
 
-              break if !c1_date && !c2_date && !cx_date
+            patch_needed = !(c1_date == c2_date == cx_date)
 
-              patch_needed = !(c1_date == c2_date == cx_date)
+            if i == 0 && patch_needed
+              console.error "price data uneven at start. forward patching." if config.log_level > 1
 
-              if i == 0 && patch_needed
-                console.error "price data uneven at start. forward patching." if config.log_level > 0
+            if c1_date > Math.min(c2_date, cx_date)
+              patch i, 'c1', Math.min(c2_date, cx_date)
+            if c2_date > Math.min(c1_date, cx_date)
+              patch i, 'c2', Math.min(c1_date, cx_date)
+            if cx_date > Math.min(c1_date, c2_date)
+              patch i, 'c1xc2', Math.min(c1_date, c2_date)
+          
+            if !patch_needed            
+              i += 1
 
-              if c1_date > Math.min(c2_date, cx_date)
-                patch i, 'c1', Math.min(c2_date, cx_date)
-              if c2_date > Math.min(c1_date, cx_date)
-                patch i, 'c2', Math.min(c1_date, cx_date)
-              if cx_date > Math.min(c1_date, c2_date)
-                patch i, 'c1xc2', Math.min(c1_date, c2_date)
-            
-              if !patch_needed            
-                i += 1
+            break if cnt > price_data.c1.length + price_data.c2.length + price_data.c1xc2.length # there is a bug where infinite loop possible
+            cnt += 1
 
-              break if cnt > price_data.c1.length + price_data.c2.length + price_data.c1xc2.length # there is a bug where infinite loop possible
-              cnt += 1
-
-            console.error equal_lengths(), 
-              msg: "patching price data failed"
-              c1_len: price_data.c1?.length
-              c2_len: price_data.c2?.length
-              c1xc2_len: price_data.c1xc2?.length
-              # price_data: price_data
+          console.error equal_lengths(), 
+            msg: "patching price data failed"
+            c1_len: price_data.c1?.length
+            c2_len: price_data.c2?.length
+            c1xc2_len: price_data.c1xc2?.length
+            # price_data: price_data
 
       # second we'll look to see if the candles are equally spaced by the desired granularity
       for pair, data of price_data when pair != 'key' && pair != 'granularity'
@@ -104,32 +92,22 @@ module.exports = history =
           
 
           if candle.date != data[idx - 1].date + granularity 
-            console.log "#{pair} has a missing candle at #{idx}" if config.log_level > 0
-            if config.disable_price_patching
-              console.log "retrying" if config.log_level > 0
-              setTimeout load_history, 1000
-              return
-            # else 
-            #   patch idx, pair 
+            console.log "#{pair} has a missing candle at #{idx}" if config.log_level > 1
 
       callback()
 
     load_history = => 
-      @load_chart_history "c1xc2", config.c1, config.c2, start, end, => 
-        return if !proceed
-        if config.accounting_currency not in [config.c1, config.c2]
-          @load_chart_history "c1", config.accounting_currency, config.c1, start, end, => 
-            return if !proceed
-            @load_chart_history "c2", config.accounting_currency, config.c2, start, end, done, if callback_empty then cb_empty
-          , if callback_empty then cb_empty
+      @load_chart_history "c1xc2", config.c1, config.c2, start, end, (error) => 
+        if !error && config.accounting_currency not in [config.c1, config.c2]
+          @load_chart_history "c1", config.accounting_currency, config.c1, start, end, (error) => 
+            return done() if error
+            @load_chart_history "c2", config.accounting_currency, config.c2, start, end, done
         else 
           done()
 
-      , if callback_empty then cb_empty
-
     load_history()
 
-  load_chart_history: (name, c1, c2, start, end, cb, callback_empty) -> 
+  load_chart_history: (name, c1, c2, start, end, cb) -> 
     console.assert c1 != c2, {message: 'why you loading price history for the same coin traded off itself?', c1: c1, c2: c2}
 
     price_data = fetch('price_data')
@@ -150,64 +128,54 @@ module.exports = history =
       from_file = fs.readFileSync(fname, 'utf8')
       store_chart JSON.parse from_file
     else
-      if !config.offline
+      return cb() if config.offline 
 
-        load_chart = -> 
-          exchange.get_chart_data
-            start: start 
-            end: end 
-            c1: c1 
-            c2: c2
-            granularity: granularity 
-          , data_callback
+      load_chart = -> 
+        exchange.get_chart_data
+          start: start 
+          end: end 
+          c1: c1 
+          c2: c2
+          granularity: granularity 
+        , data_callback
 
-        data_callback = (price_history) =>
-          price_history ||= []  
-          try   
-            price_history.sort (a,b) -> a.date - b.date
-          catch err
-            console.assert false, {err, price_history}
+      data_callback = (price_history) =>
+        price_history ||= []  
+        try   
+          price_history.sort (a,b) -> a.date - b.date
+        catch err
+          console.assert false, {err, price_history}
 
-          error = price_history.length == 0 || price_history[0].date > start || price_history[price_history.length - 1].date + granularity < end
+        error = price_history.length == 0 || price_history[0].date > start || price_history[price_history.length - 1].date + granularity < end
 
-          if error 
-            console.log "#{config.exchange} returned bad price history for #{c1}-#{c2}." if config.log_level > 0
-            if price_history && price_history.length > 0 && price_history[0].date > 0 && price_history[price_history.length - 1].date > 0 
-              
-              if config.log_level > 1
-                console.log 
-                  first: price_history[0].date
-                  target_start: start 
-                  last: price_history[price_history.length - 1].date + granularity
-                  target_end: end 
-                  first_entry: price_history[0]
-                  last_entry: price_history[price_history.length - 1]
+        if error 
+          console.log "#{config.exchange} returned bad price history for #{c1}-#{c2}." if config.log_level > 1
+          if price_history?.length > 0 && price_history[0].date > 0 && price_history[price_history.length - 1].date > 0 
+            
+            if config.log_level > 2 || attempts > 10
+              console.log 
+                first: price_history[0].date
+                target_start: start 
+                last: price_history[price_history.length - 1].date + granularity
+                target_end: end 
+                first_entry: price_history[0]
+                last_entry: price_history[price_history.length - 1]
 
-              if callback_empty?
-                callback_empty({start: price_history[0].date, end: price_history[price_history.length - 1].date + granularity})
-                cb()
-                console.log 'not retrying.' if config.log_level > 0
-                return
-
-            else if callback_empty?
-              callback_empty()
-              cb()
-              console.log 'not retrying.' if config.log_level > 0
-              return
-
-            console.log "Trying again." if config.log_level > 0
+          if !config.simulation
+            console.log 'not retrying.' if config.log_level > 1
+            cb true 
+          else 
+            console.log "Trying again." if config.log_level > 1 || attempts > 10
             attempts += 1
             setTimeout load_chart, attempts * 100
 
-          else 
-            if !fs.existsSync fname 
-              fs.writeFileSync fname, JSON.stringify(price_history), 'utf8' 
-            store_chart(price_history)
+        else 
+          if !fs.existsSync fname 
+            fs.writeFileSync fname, JSON.stringify(price_history), 'utf8' 
+          store_chart(price_history)
 
-        load_chart()
+      load_chart()
 
-      else 
-        cb()
 
   load: (start, end, complete) -> 
     @trades = []
@@ -224,7 +192,7 @@ module.exports = history =
     first_hour = Math.floor start / 60 / 60
     last_hour = Math.ceil end / 60 / 60
 
-    if config.log_level > 0
+    if config.log_level > 1
       bar = new progress_bar '  loading history [:bar] :percent :etas :elapsed',
         complete: '='
         incomplete: ' '
@@ -237,15 +205,15 @@ module.exports = history =
       if func && !config.history_loaded
         to_run.push func 
       else 
-        bar.tick() if config.log_level > 0
+        bar.tick() if config.log_level > 1
 
 
     is_done = =>
-      bar.tick() if config.log_level > 0
+      bar.tick() if config.log_level > 1
       if to_run.length == 0
 
         @trades.sort (a,b) -> b.date - a.date
-        console.log "Done loading history! #{@trades.length} trades." if config.log_level > 0
+        console.log "Done loading history! #{@trades.length} trades." if config.log_level > 1
 
         # duplicate detection
         if false 
@@ -371,7 +339,25 @@ module.exports = history =
     trade
 
 
+  # Advance the current time pointer in history relative to time. @trades is sorted newest first
+  trade_idx: null 
+  advance: (time) -> 
+    if @trade_idx == null 
+      @trade_idx = @trades.length - 1
+      
+    end_idx = @trade_idx 
 
+    # zzz = Date.now()    
+    while end_idx >= 0 
+      if @trades[end_idx].date > time  || end_idx < 0 
+        end_idx += 1 
+        break
+      end_idx -= 1
+
+    # t_.x += Date.now() - zzz
+    console.assert end_idx < history.trades.length, {message: 'ending wrong!', end_idx: end_idx, trades: history.trades.length}
+    @last_trade = history.trades[end_idx]
+    @trade_idx = end_idx
 
 
 

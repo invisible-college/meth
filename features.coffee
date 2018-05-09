@@ -46,7 +46,7 @@ f.volume = (engine, args) ->
       boundary = fb[1]
 
       while idx % INC > 0 && idx < boundary
-        trade = history.trades[idx] 
+        trade = engine.trades[idx] 
         v += trade.amount
         idx += 1
 
@@ -56,7 +56,7 @@ f.volume = (engine, args) ->
           nv = 0
           end_idx = idx + INC
           while idx < end_idx
-            trade = history.trades[idx] 
+            trade = engine.trades[idx] 
             nv += trade.amount         
             idx += 1
           idx -= INC 
@@ -67,7 +67,7 @@ f.volume = (engine, args) ->
         idx += INC
 
       while idx < boundary
-        trade = history.trades[idx] 
+        trade = engine.trades[idx] 
         v += trade.amount
         idx += 1
 
@@ -113,7 +113,7 @@ f.price = (engine, args) ->
       boundary = fb[1]
 
       while idx % INC > 0 && idx < boundary
-        trade = history.trades[idx] 
+        trade = engine.trades[idx] 
         amount += trade.amount 
         total += trade.amount * trade.rate 
         idx += 1
@@ -124,7 +124,7 @@ f.price = (engine, args) ->
           namount = ntotal = 0
           end_idx = idx + INC
           while idx < end_idx
-            trade = history.trades[idx] 
+            trade = engine.trades[idx] 
             namount += trade.amount 
             ntotal += trade.amount * trade.rate 
             idx += 1
@@ -137,7 +137,7 @@ f.price = (engine, args) ->
         idx += INC
 
       while idx < boundary
-        trade = history.trades[idx] 
+        trade = engine.trades[idx] 
         amount += trade.amount 
         total += trade.amount * trade.rate 
         idx += 1
@@ -190,7 +190,7 @@ f.min_price = (engine, args) ->
     boundary = fb[1]
 
     while idx % INC > 0 && idx < boundary
-      trade = history.trades[idx] 
+      trade = engine.trades[idx] 
       if trade.rate < min 
         min = trade.rate 
       idx += 1
@@ -201,7 +201,7 @@ f.min_price = (engine, args) ->
         nmin = Infinity
         end_idx = idx + INC
         while idx < end_idx
-          trade = history.trades[idx] 
+          trade = engine.trades[idx] 
           if nmin < trade.rate 
             nmin = trade.rate         
           idx += 1
@@ -215,7 +215,7 @@ f.min_price = (engine, args) ->
       idx += INC
 
     while idx < boundary
-      trade = history.trades[idx] 
+      trade = engine.trades[idx] 
       if trade.rate < min 
         min = trade.rate 
       idx += 1
@@ -237,7 +237,7 @@ f.max_price = (engine, args) ->
     boundary = fb[1]
 
     while idx % INC > 0 && idx < boundary
-      trade = history.trades[idx] 
+      trade = engine.trades[idx] 
       if trade.rate > max 
         max = trade.rate 
       idx += 1
@@ -248,7 +248,7 @@ f.max_price = (engine, args) ->
         nmax = 0
         end_idx = idx + INC
         while idx < end_idx
-          trade = history.trades[idx] 
+          trade = engine.trades[idx] 
           if nmax < trade.rate 
             nmax = trade.rate         
           idx += 1
@@ -262,7 +262,7 @@ f.max_price = (engine, args) ->
       idx += INC
 
     while idx < boundary
-      trade = history.trades[idx] 
+      trade = engine.trades[idx] 
       if trade.rate > max 
         max = trade.rate 
       idx += 1
@@ -280,10 +280,21 @@ f.min_price.frames = f.max_price.frames = (args) -> f.last_price.frames(args) + 
 
 f.last_price = (engine, args) -> 
   t = args.t or 0
+  weight = args.weight or 1
+
   if engine.trades_in_frame(t) > 0
-    engine.latest_trade(t).rate
+    p = engine.latest_trade(t).rate
+
   else 
-    engine.last_price t: args.t + 1
+    p = engine.last_price {t: args.t + 1, weight}
+
+  should_continue = weight < 1 && check_history_continuation(engine, t, weight)
+
+  if should_continue
+    p2 = engine.last_price {t: args.t + 1, weight}
+    p = Math.weighted_average p, p2, weight 
+
+  p
 
 
 f.first_price = (engine, args) -> 
@@ -294,7 +305,8 @@ f.first_price = (engine, args) ->
   else 
     engine.last_price t: args.t + 1
 
-f.last_price.frames = f.first_price.frames = (args) -> (args.t or 0) + 3
+f.last_price.frames = f.first_price.frames = (args) -> 
+  frames_for_weight((args.weight or 1)) + (args.t or 0) + 3
 
 
 f.price_stddev = (engine, args) -> 
@@ -303,7 +315,7 @@ f.price_stddev = (engine, args) ->
     fb = engine.frame_boundary(i)
     idx = fb[0]
     while idx < fb[1]
-      rates.push history.trades[idx].rate
+      rates.push engine.trades[idx].rate
       idx += 1
 
   if rates.length > 0 
@@ -327,7 +339,7 @@ f.volume_adjusted_price_stddev = (engine, args) ->
     fb = engine.frame_boundary(i)
     idx = fb[0]
     while idx < fb[1]
-      trade = history.trades[idx] 
+      trade = engine.trades[idx] 
       idx += 1
       observations += 1
       weighted_dev += trade.amount * (trade.rate - weighted_mean) * (trade.rate - weighted_mean)
@@ -384,7 +396,7 @@ f.upwards_volume_adjusted_price_stddev = (engine, args) ->
     fb = engine.frame_boundary(i)
     idx = fb[0]
     while idx < fb[1]
-      trade = history.trades[idx] 
+      trade = engine.trades[idx] 
       idx += 1
       continue if trade.rate < opening_price
       amount += trade.amount
@@ -403,7 +415,7 @@ f.upwards_volume_adjusted_price_stddev = (engine, args) ->
     fb = engine.frame_boundary(i)
     idx = fb[0]
     while idx < fb[1]
-      trade = history.trades[idx] 
+      trade = engine.trades[idx] 
       idx += 1
       continue if trade.rate < opening_price
       observations += 1
@@ -427,7 +439,7 @@ f.downwards_volume_adjusted_price_stddev = (engine, args) ->
     fb = engine.frame_boundary(i)
     idx = fb[0]
     while idx < fb[1]
-      trade = history.trades[idx] 
+      trade = engine.trades[idx] 
       idx += 1
       continue if trade.rate > opening_price
       amount += trade.amount
@@ -445,7 +457,7 @@ f.downwards_volume_adjusted_price_stddev = (engine, args) ->
     fb = engine.frame_boundary(i)
     idx = fb[0]
     while idx < fb[1]
-      trade = history.trades[idx] 
+      trade = engine.trades[idx] 
       idx += 1
       continue if trade.rate > opening_price
       observations += 1
@@ -671,7 +683,7 @@ f.MACD.frames = f.MACD_signal.frames = (args) ->
 f.DI_plus = (engine, args) -> 
   alpha = args.weight or 1
 
-  # t2t = Date.now() if config.log_level > 0
+  # t2t = Date.now() if config.log_level > 1
   ATR = engine.ATR({t: args.t, weight: alpha})
   v = 100 * engine.DM_plus({t: args.t})
   # by_feature.DI_plus ?= 0
@@ -691,7 +703,7 @@ f.DI_plus = (engine, args) ->
 f.DI_minus = (engine, args) -> 
   alpha = args.weight or 1
 
-  # t2t = Date.now() if config.log_level > 0
+  # t2t = Date.now() if config.log_level > 1
   ATR = engine.ATR({t: args.t, weight: alpha})
   v = 100 * engine.DM_minus({t: args.t})
   # by_feature.DI_minus ?= 0
@@ -722,7 +734,7 @@ f.DM_plus = (engine, args) ->
   p = args.t
   alpha = args.weight or 1
 
-  # t2t = Date.now() if config.log_level > 0
+  # t2t = Date.now() if config.log_level > 1
   cur_high = engine.max_price({t: p})
   prev_high = engine.max_price({t: p + 1})
   cur_low = engine.min_price({t: p})
@@ -751,7 +763,7 @@ f.DM_minus = (engine, args) ->
   p = args.t
   alpha = args.weight or 1
 
-  # t2t = Date.now() if config.log_level > 0
+  # t2t = Date.now() if config.log_level > 1
   cur_high = engine.max_price({t: p})
   prev_high = engine.max_price({t: p + 1})
   cur_low = engine.min_price({t: p})
@@ -785,7 +797,7 @@ f.DM_plus.frames = f.DM_minus.frames = (args) ->
 f.ATR = (engine, args) -> 
   p = args.t
 
-  # t2t = Date.now() if config.log_level > 0
+  # t2t = Date.now() if config.log_level > 1
 
   cur_high = engine.max_price({t: p})
   cur_low = engine.min_price({t: p})

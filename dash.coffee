@@ -1859,8 +1859,6 @@ dom.BANK = ->
       c1: 0
       c2: 0
 
-    maker_fee = balances.maker_fee
-    taker_fee = balances.taker_fee
     for dealer in dealers
       positions = fetch(dealer).positions
       dealer = deslash(dealer)
@@ -1879,21 +1877,19 @@ dom.BANK = ->
       for trade in all_trades
         if trade.type == 'buy'
           for fill in trade.fills
-            xfee = if fill.maker then maker_fee else taker_fee
             balance_sum_from_positions.c2 += fill.amount
             balance_sum_from_positions.c1 -= fill.total
 
             if config.exchange == 'poloniex'
-              balance_sum_from_positions.c2 -= (if fill.fee? then fill.fee else fill.amount * xfee)
+              balance_sum_from_positions.c2 -= fill.fee
             else 
-              balance_sum_from_positions.c1 -= (if fill.fee? then fill.fee else fill.total * xfee)
+              balance_sum_from_positions.c1 -= fill.fee
 
         else 
           for fill in trade.fills
-            xfee = if fill.maker then maker_fee else taker_fee
             balance_sum_from_positions.c2 -= fill.amount
             balance_sum_from_positions.c1 += fill.total
-            balance_sum_from_positions.c1 -= (if fill.fee? then fill.fee else fill.total * xfee)
+            balance_sum_from_positions.c1 -= fill.fee
 
 
     # console.log 'bank',

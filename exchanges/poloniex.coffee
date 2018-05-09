@@ -356,6 +356,8 @@ module.exports = poloniex =
     if opts.flags?.market 
       return poloniex.market_order(opts, callback)
 
+    opts.rate = parseFloat opts.rate.toFixed(poloniex.minimum_rate_precision())
+    
     poloniex.query_trading_api
       command: opts.type
       amount: opts.amount

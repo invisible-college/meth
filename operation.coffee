@@ -23,7 +23,7 @@ global.tick =
   # lock: false
 
 
-
+global.no_new_orders = false 
 
 
 process.on 'SIGINT', ->
@@ -68,100 +68,92 @@ one_tick = ->
     return
 
 
-  if config.log_level > 0
+  if config.log_level > 1
     console.log "TICKING @ #{tick.time}! #{all_lag.length} messages with #{Math.average(all_lag)} avg lag"
   # tick.lock = true
 
-  cb = ->
-    if config.disabled
-      log_tick()
+  history.load_price_data 
+    start: (time.earliest or tick.started) - tick.history_to_keep
+    end: now()
+    callback: -> 
+      if config.disabled
+        console.log 'disabled'
+        log_tick()
 
-      # tick.lock = false
-      KPI (stats) ->
-        m = stats.all.metrics                
-        m.key = 'stats' 
-        bus.save m
+        # tick.lock = false
+        KPI (stats) ->
+          m = stats.all.metrics                
+          m.key = 'stats' 
+          bus.save m
+        return    
 
-        f = bus.fetch 'fees'
-        f.fees = m.fees 
-        f.slippage = stats.all.slippage
-        bus.save f      
-      return    
+      update_position_status ->
+        update_account_balances false, ->
 
-    update_position_status ->
-      update_account_balances ->
+          setImmediate -> # free thread to process any last trades
+            history.last_trade = history.trades[0]
 
-        setImmediate -> # free thread to process any last trades
-          history.last_trade = history.trades[0]
+            # tick.time = now()
+            if !laggy
+              balance = from_cache('balances')
+              pusher.reset_open()
+              pusher.hustle balance
 
-          # tick.time = now()
-          if !laggy
-            balance = from_cache('balances')
-            pusher.reset_open()
-            pusher.hustle balance
+            # wait for the trades or cancelations to complete
+            i = setImmediate ->
 
-          # wait for the trades or cancelations to complete
-          i = setImmediate ->
-
-            for name in get_all_actors()
-              bus.save from_cache(name)
+              for name in get_all_actors()
+                bus.save from_cache(name)
 
 
-            all_lag = []
+              all_lag = []
 
-            log_tick()
+              log_tick()
+              console.log "Tick (mostly) done" if config.log_level > 1
 
-            KPI (stats) ->
-              m = stats.all.metrics                
-              m.key = 'stats' 
-              bus.save m
+              KPI (stats) ->
+                m = stats.all.metrics                
+                m.key = 'stats' 
+                bus.save m
 
-              f = bus.fetch 'fees'
-              f.fees = m.fees 
-              f.slippage = stats.all.slippage
-              bus.save f
 
-            if config.reset_every && !unfilled_orders() && (  (tick.time - (tick.started or 0) > config.reset_every * 60 * 60) || global.restart_when_possible)
-              
-              setTimeout ->
-
-                # write feature cache to disk
-                for resolution, engine of feature_engine.resolutions
-                  engine.write_to_disk()
-
-                dealer_is_locked = false 
-                for name in get_all_actors()
-                  dealer = from_cache name 
-                  dealer_is_locked ||= dealer.locked 
+              if config.reset_every && !unfilled_orders() && (  (tick.time - (tick.started or 0) > config.reset_every * 60 * 60) || global.restart_when_possible)
                 
-                if !exchange.all_clear()
-                  if config.log_level > 0 
-                    log_error false, {message: "Want to reset, but exchange has outstanding requests", time}
-                else if dealer_is_locked
-                  if config.log_level > 0 
-                    console.error {message: "Want to reset, but at least one dealer is locked", time}
-                else 
-                  if config.log_level > 0
-                    console.log 'Due for a reset. Assuming a monitoring process that will restart the app', {reset_every: config.reset_every, time: tick.time, started: tick.started, diff: tick.time - tick.started, should: (tick.time - (tick.started or 0) > config.reset_every * 60 * 60)}
+                setTimeout ->
+
+                  # write feature cache to disk
+                  for resolution, engine of feature_engine.resolutions
+                    engine.write_to_disk()
+
+                  dealer_is_locked = false 
+                  for name in get_all_actors()
+                    dealer = from_cache name 
+                    dealer_is_locked ||= dealer.locked 
                   
-                  bus.save {key: 'time_to_die', now: true}
+                  if !exchange.all_clear()
+                    if config.log_level > 1 
+                      log_error false, {message: "Want to reset, but exchange has outstanding requests", time}
+                  else if dealer_is_locked
+                    if config.log_level > 1 
+                      console.error {message: "Want to reset, but at least one dealer is locked", time}
+                  else 
+                    if config.log_level > 1
+                      console.log 'Due for a reset. Assuming a monitoring process that will restart the app', {reset_every: config.reset_every, time: tick.time, started: tick.started, diff: tick.time - tick.started, should: (tick.time - (tick.started or 0) > config.reset_every * 60 * 60)}
+                    
+                    bus.save {key: 'time_to_die', now: true}
 
-                console.log "Tick done" if config.log_level > 0
-              , 100
+                , 100
 
 
-            # noww = now()
-            # history.disconnect_from_exchange_feed()
-            # history.load noww - tick.history_to_keep, noww, -> 
-            #   history.subscribe_to_exchange_feed -> 
-            #     tick.lock = false  #...and now we're done with this tick
+              # noww = now()
+              # history.disconnect_from_exchange_feed()
+              # history.load noww - tick.history_to_keep, noww, -> 
+              #   history.subscribe_to_exchange_feed -> 
+              #     tick.lock = false  #...and now we're done with this tick
 
 
 
 
-  history.load_price_data (time.earliest or tick.started) - tick.history_to_keep, now(), cb, cb
- 
- 
 
 
 
@@ -246,7 +238,6 @@ update_position_status = (callback) ->
                     break if already_processed
                   continue if already_processed
                   new_fill.type = t.type
-                  new_fill.slippage = fill.amount * Math.abs(fill.rate - t.original_rate) / t.original_rate
                   t.fills.push new_fill
 
 
@@ -286,8 +277,9 @@ update_position_status = (callback) ->
               console.error {message: "Nothing to fill but orders not completed", trade: t, fills: t.fills, open_orders}
 
             if orders_completed 
-              if (  (t.flags?.market && t.type == 'buy')  && t.to_fill > exchange.minimum_order_size(config.c1)) || \
-                 ( (!t.flags?.market || t.type == 'sell') && t.to_fill > exchange.minimum_order_size() )
+              if (  (t.flags?.market && t.type == 'buy') &&    t.to_fill > exchange.minimum_order_size(config.c1)) || \
+                 ( !(t.flags?.market && t.type == 'buy') && (  t.to_fill > exchange.minimum_order_size() && \
+                                                               t.to_fill * t.rate > exchange.minimum_order_size(config.c1)) )
 
 
                 # Our filled amount doesn't match. We might have to issue another order. However, sometimes the exchange has marked an order
@@ -297,7 +289,7 @@ update_position_status = (callback) ->
                 t.assessing_clear_order_since[key] ||= tick.time
 
                 if tick.time - t.assessing_clear_order_since[key] > 5 * 60
-                  t.assessing_clear_order_since[key] = null
+                  delete t.assessing_clear_order_since[key]
                   # this trade still needs more fills
                   t.current_order = null 
 
@@ -307,46 +299,32 @@ update_position_status = (callback) ->
                     fills: t.fills 
                     to_fill: t.to_fill
                     pos: pos.key
+                    was_locked: dealer_data.locked
+
+                  if dealer_data.locked
+                    dealer_data.locked = false 
+                    bus.save dealer_data
 
               else
 
-                total = 0
-                fees = 0
-                last = null
-                amount = 0
-
-                for fill in (t.fills or [])
-                  total += fill.total
-                  fees += fill.fee
-                  amount += fill.amount
-
-                  if fill.date > last 
-                    last = fill.date
-
                 if !(t.fills?.length > 0)
-                  last = t.created
                   log_error false, {message: "Trade is closing but had no fills", trade: t, fills: t.fills, pos}
 
-                t.amount = amount
-                t.total = total
-                t.fee = fees
-                t.to_fill = 0 
-                t.closed = last
+                close_trade(pos, t)
 
           if pos.entry?.closed && pos.exit?.closed
             buy = if pos.entry.type == 'buy' then pos.entry else pos.exit
             sell = if pos.entry.type == 'buy' then pos.exit else pos.entry
 
-            if config.exchange == 'poloniex'
-              pos.profit = (sell.total - buy.total - sell.fee) / pos.exit.rate + (buy.amount - sell.amount - buy.fee)
-            else 
-              pos.profit = (sell.total - buy.total - sell.fee - buy.fee) / pos.exit.rate + (buy.amount - sell.amount)
+            pos.profit = (sell.total - buy.total - (sell.c1_fees + buy.c1_fees)) / \
+                          pos.exit.rate + (buy.amount - sell.amount - (buy.c2_fees + sell.c2_fees))
+
             pos.closed = Math.max pos.entry.closed, pos.exit.closed
           
 
           changed = JSON.stringify(pos) != before
           if changed || !pos.closed
-            if changed && config.log_level > 0 
+            if changed && config.log_level > 1 
               console.log 'CHANGED!', pos
             bus.save pos
 
@@ -404,7 +382,7 @@ placed_order = ({result, pos, trade}) ->
 
 
 place_dynamic_order = ({trade, amount, pos}, placed_callback) ->
-  console.log 'PLACING DYNAMIC ORDER' if config.log_level > 1
+  console.log 'PLACING DYNAMIC ORDER' if config.log_level > 2
   exchange.dynamic_place_order
     type: trade.type
     amount: amount
@@ -427,20 +405,20 @@ place_dynamic_order = ({trade, amount, pos}, placed_callback) ->
   , (result) -> # updated callback
     placed_order {result, pos, trade}
   , -> # finished callback
-    console.log 'UNLOCKING DEALER' if config.log_level > 1
+    console.log 'UNLOCKING DEALER' if config.log_level > 2
     dealer = from_cache pos.dealer
     dealer.locked = false 
     bus.save dealer  
 
 update_dynamic_order = ({trade, pos}) ->
-  console.log 'UPDATING DYNAMIC ORDER' if config.log_level > 1
+  console.log 'UPDATING DYNAMIC ORDER' if config.log_level > 2
   exchange.dynamic_move_order
     trade: trade # orphanable
     pos: pos      
   , (result) -> # updated callback
     placed_order {result, pos, trade}
   , -> # finished callback
-    console.log 'UNLOCKING DEALER' if config.log_level > 1
+    console.log 'UNLOCKING DEALER' if config.log_level > 2
     dealer = from_cache pos.dealer
     dealer.locked = false 
     bus.save dealer  
@@ -469,12 +447,12 @@ take_position = (pos, callback) ->
     do (trade, amount) -> 
 
       if amount < exchange.minimum_order_size()
-        log_error true, 
+        log_error false, 
           message: "trying to place an order for less than minimum" 
           minimum: exchange.minimum_order_size()
           trade: trade 
           pos: pos 
-        return 
+        return callback(true, trades_left) 
 
 
       if config.exchange == 'gdax' && trade.flags?.order_method > 1
@@ -486,11 +464,11 @@ take_position = (pos, callback) ->
         , (result) ->     
           trades_left--
           error = error or result.error
-          console.log 'PLACED CALLBACK', {trades_left, error, trade, entry: pos.entry, exit: pos.exit} if config.log_level > 1
+          console.log 'PLACED CALLBACK', {trades_left, error, trade, entry: pos.entry, exit: pos.exit} if config.log_level > 2
           callback error, trades_left
 
       else
-        console.log 'PLACING STATIC ORDER', {config, trade} if config.log_level > 1
+        console.log 'PLACING STATIC ORDER', {config, trade} if config.log_level > 2
         exchange.place_order
           type: trade.type
           amount: amount
@@ -519,7 +497,7 @@ update_trade = ({pos, trade, rate, amount}, callback) ->
   dealer.locked = tick.time 
   bus.save dealer
 
-  if config.log_level > 1
+  if config.log_level > 2
     console.log 'UPDATING TRAAAAADE', 
       trade: trade
       exchange: config.exchange 
@@ -594,10 +572,11 @@ cancel_unfilled = (pos, callback) ->
 
 
 
-update_account_balances = (callback) ->
+update_account_balances = (halt_on_error, callback) ->
   sheet = from_cache 'balances'
   initialized = false # sheet.balances?
   dealers = get_dealers()
+
 
   exchange.get_my_balance {c1: config.c1, c2: config.c2}, (result) -> 
 
@@ -626,6 +605,9 @@ update_account_balances = (callback) ->
       sheet.on_order = 
         c1: 0 
         c2: 0 
+      sheet.xchange_total = 
+        c1: x_sheet.balances.c1 + x_sheet.on_order.c1
+        c2: x_sheet.balances.c2 + x_sheet.on_order.c2
 
       # initialize, assuming equal distribution of available balance
       # between dealers 
@@ -692,8 +674,8 @@ update_account_balances = (callback) ->
               dbtc += fill.total 
               dbtc -= fill.fee
       
-      btc += dbtc 
-      eth += deth 
+      btc += dbtc
+      eth += deth
       btc_on_order += dbtc_on_order
       eth_on_order += deth_on_order
 
@@ -704,31 +686,43 @@ update_account_balances = (callback) ->
       dbalance.on_order.c1 = dbtc_on_order
       dbalance.on_order.c2 = deth_on_order
 
-      if dbalance.balances.c1 < 0 || dbalance.balances.c2 < 0
+      if dbalance.balances.c1 + dbtc_on_order < 0 || dbalance.balances.c2 + deth_on_order < 0
         fills = []
         fills_out = []
         pos = null 
         for pos in positions
           for trade in [pos.entry, pos.exit] when trade 
             fills = fills.concat trade.fills
-            console.log trade if config.log_level > 0
+            console.log trade if config.log_level > 1
             for fill in trade.fills
               if fill.type == 'sell'
                 fills_out.push "#{pos.key}\t#{trade.entry or false}\t#{trade.created}\t#{fill.order_id}\t#{fill.total}\t-#{fill.amount}\t#{fill.fee}"
               else 
                 fills_out.push "#{pos.key}\t#{trade.entry or false}\t#{trade.created}\t#{fill.order_id}\t-#{fill.total}\t#{fill.amount}\t#{fill.fee}"
 
-        if pos.last_error != 'Negative balance' && !config.disabled
-          log_error config.simulation,
-            message: 'negative balance!?!'
-            dealer: dealer
-            balance: sheet.balances
-            dbalance: sheet[dealer]
-            positions: positions
-            last_entry: positions[positions.length - 1]?.entry
-            last_exit: positions[positions.length - 1]?.exit
-            fills: fills
-            fills_out: fills_out
+        if !config.disabled
+          if pos.last_error != 'Negative balance' 
+            log_error halt_on_error,
+              message: 'negative balance!?!'
+              dealer: dealer
+              balance: sheet.balances
+              dbalance: sheet[dealer]
+              positions: positions
+              last_entry: positions[positions.length - 1]?.entry
+              last_exit: positions[positions.length - 1]?.exit
+              fills: fills
+              fills_out: fills_out
+          else 
+            console.error 
+              message: 'negative balance!?!'
+              dealer: dealer
+              balance: sheet.balances
+              dbalance: sheet[dealer]
+              positions: positions
+              last_entry: positions[positions.length - 1]?.entry
+              last_exit: positions[positions.length - 1]?.exit
+              fills: fills
+              fills_out: fills_out
 
         pos.last_error = 'Negative balance'
         bus.save pos
@@ -738,17 +732,22 @@ update_account_balances = (callback) ->
     sheet.on_order.c1 = btc_on_order
     sheet.on_order.c2 = eth_on_order
 
+
     if !config.disabled 
       if sheet.on_order.c1 != btc_on_order || sheet.on_order.c2 != eth_on_order
-        log_error true, 
+        global.no_new_orders = true 
+        log_error halt_on_error, 
           message: "Order amounts differ"
           c1_on_order: btc_on_order
           c2_on_order: eth_on_order
           on_order: sheet.on_order
 
+    bus.save sheet
 
+    if !config.disabled 
       if sheet.deposits.c1 + btc > x_sheet.balances.c1 || sheet.deposits.c2 + eth > x_sheet.balances.c2
-        log_error true, 
+        global.no_new_orders = true 
+        log_error halt_on_error, 
           message: "Dealers have more balance than available"
           c1: btc
           c2: eth
@@ -758,7 +757,6 @@ update_account_balances = (callback) ->
           exchange_balances: x_sheet.balances
 
 
-    bus.save sheet
 
     callback?()
 
@@ -779,44 +777,35 @@ update_fee_schedule = (callback) ->
 migrate_data = -> 
   migrate = bus.fetch('migrations')
 
-  if !migrate.flags_and_fills
-    console.warn 'MIGRATING FLAGS AND FILLS!'
+  if !migrate.currency_specific_fee
+    console.warn 'MIGRATING FEES!'
 
     for key, pos of bus.cache
       if key.match('position/') && key.split('/').length == 2 && !pos.series_data
-        for trade in [pos.entry, pos.exit] when trade 
-          if trade.market
-            trade.flags ?= {}
-            trade.flags.market = true 
-            delete trade.market 
-          if trade.post_only
-            trade.flags ?= {}
-            trade.flags.post_only = true 
-            delete trade.post_only 
-          if trade.auto_adjust
-            trade.flags ?= {}
-            trade.flags.auto_adjust = true 
-            delete trade.auto_adjust 
+        for trade in [pos.entry, pos.exit] when trade && trade.closed
+          # we'll reclose it to update info
+          close_trade(pos, trade)        
 
-          if !trade.flags?.order_method?
-            trade.flags ?= {}
-            trade.flags.order_method = 0 
-            if trade.flags?.post_only 
-              trade.flags.order_method = 1
+    migrate.currency_specific_fee = true
+    bus.save migrate 
 
-          if trade.original_rate? || (pos.original_exit? && !trade.entry)
-            original_rate = trade.original_rate or pos.original_exit
-            for fill in (trade.fills or []) when !fill.slippage?
-              fill.slippage = fill.amount * Math.abs(fill.rate - original_rate) / original_rate
+  else if !migrate.profit_calcsss
+    console.warn 'MIGRATING profit_calc!'
 
-            if pos.original_exit
-              trade.original_rate = pos.original_exit
-              delete pos.original_exit
-        
+    for key, pos of bus.cache
+      if key.match('position/') && key.split('/').length == 2 && !pos.series_data && pos.closed && (pos.profit == null || !pos.profit? || isNaN(pos.profit))
+        buy = if pos.entry.type == 'buy' then pos.entry else pos.exit
+        sell = if pos.entry.type == 'buy' then pos.exit else pos.entry
+        pos.profit = (sell.total - buy.total - (sell.c1_fees + buy.c1_fees)) / \
+                      pos.exit.rate + (buy.amount - sell.amount - (buy.c2_fees + sell.c2_fees))
+        console.log pos
+
         bus.save pos
 
-    migrate.flags_and_fills = true
+    migrate.profit_calcsss = true
     bus.save migrate 
+
+
 
 
 
@@ -847,8 +836,9 @@ operation = module.exports =
 
     time = from_cache 'time'
 
-    console.log 'STARTING METH' if config.log_level > 0
-
+    console.log 'STARTING METH' if config.log_level > 1
+    console.error 'STARTING METH' if config.log_level > 1
+    
     bus.save {key: 'time_to_die', now: false}
     bus('time_to_die').on_save = (o) ->
       if o.now
@@ -870,7 +860,7 @@ operation = module.exports =
 
     history_width = history.longest_requested_history
 
-    console.log "...loading past #{(history_width / 60 / 60 / 24).toFixed(2)} days of trade history" if config.log_level > 0
+    console.log "...loading past #{(history_width / 60 / 60 / 24).toFixed(2)} days of trade history" if config.log_level > 1
 
     tick.started = ts = now()
     tick.history_to_keep = history_width
@@ -883,33 +873,29 @@ operation = module.exports =
         console.error {message: "Unlocked dealer on reset. Could have bad state.", name}
 
 
-    history.load_price_data (time.earliest or tick.started) - history_width, ts, ->
+    history.load_price_data 
+      start: (time.earliest or tick.started) - tick.history_to_keep
+      end: ts
+      callback: -> 
+        history.load ts - history_width, ts, ->
 
-      history.load ts - history_width, ts, ->
+          history.last_trade = history.trades[0]
 
-        history.last_trade = history.trades[0]
+          console.log "...connecting to #{config.exchange} live updates" if config.log_level > 1
+          
+          history.subscribe_to_exchange_feed ->
 
-        console.log "...connecting to #{config.exchange} live updates" if config.log_level > 0
-        
-        history.subscribe_to_exchange_feed ->
+            console.log "...updating account balances" if config.log_level > 1 
 
-          console.log "...updating account balances" if config.log_level > 0 
+            update_fee_schedule -> 
+              update_position_status ->
 
-          # update_deposit_history ->
-          update_fee_schedule -> 
-            update_position_status ->
+                update_account_balances true, ->
 
-              update_account_balances ->
+                  console.log "...hustling!" if config.log_level > 1 
 
-                console.log "...hustling!" if config.log_level > 0 
-
-                one_tick()
-                setInterval one_tick, pusher.tick_interval * 1000
-
-                # if config.exchange == 'gdax' && config.disabled 
-                #   setInterval -> 
-                #     global.update_rate 'buy', -> 
-                #   , 1000
+                  one_tick()
+                  setInterval one_tick, pusher.tick_interval * 1000
 
 
   setup: ({port, db_name, clear_old}) -> 

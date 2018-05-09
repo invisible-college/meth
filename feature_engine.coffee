@@ -88,7 +88,7 @@ feature_engine = module.exports =
         engine.ticks++ 
 
         resolution = @resolution
-        trade_idx = engine.trade_idx = tick.trade_idx or 0
+        trade_idx = engine.trade_idx = history.trade_idx or 0
 
         # clear cache every once in awhile
         if !engine.cache? || engine.ticks % 10000 == 9999
@@ -125,7 +125,7 @@ feature_engine = module.exports =
         last_frame_w = 100
         a = last_boundary = trade_idx 
         frame_boundaries = []
-        #t1t = Date.now() if config.log_level > 0
+        #t1t = Date.now() if config.log_level > 1
         for frame_boundary in [0..num_frames - 1]
           if a >= num_trades - 1
             a = num_trades - 2
@@ -134,7 +134,7 @@ feature_engine = module.exports =
 
           if !(trades[a]?)
             log_error true,
-              message: 'No trade history entry for #{a}'
+              message: "No trade history entry for #{a}"
               a: a 
               b: b 
               frame_boundaries: frame_boundaries
@@ -192,7 +192,7 @@ feature_engine = module.exports =
         engine.frames = {}
         engine.enough_trades = enough_trades
 
-        if engine.ticks % 25000 == 0
+        if engine.ticks % 15000 == 0
           global.feature_cache = 
             price: {}
             volume: {}
@@ -207,7 +207,7 @@ feature_engine = module.exports =
       
       frame: (i) ->
         if !engine.frames[i]?
-          # t2t = Date.now() if config.log_level > 0
+          # t2t = Date.now() if config.log_level > 1
           boundary = engine.frame_boundaries[i]
           engine.frames[i] = engine.trades.slice(boundary[0], boundary[1])
           # t_.z += Date.now() - t2t if t_?
@@ -287,8 +287,9 @@ initialize_feature = (engine, name, func) ->
     MACD_weight = args?.MACD_weight or ''
     MACD_feature = args?.MACD_feature or 'price'
     eval_entry_every_n_seconds = args?.eval_entry_every_n_seconds or ''
+    confirm_weight = args?.confirm_weight or ''
 
-    key = "#{right_now - t * resolution}-#{right_now - t2 * resolution}-#{weight}-#{vel_weight}-#{short_resolution}-#{MACD_weight}-#{eval_entry_every_n_seconds}-#{MACD_feature}"
+    key = "#{right_now - t * resolution}-#{right_now - t2 * resolution}-#{weight}-#{vel_weight}-#{short_resolution}-#{MACD_weight}-#{eval_entry_every_n_seconds}-#{MACD_feature}-#{confirm_weight}"
 
     val = cache[key]
 
@@ -331,7 +332,7 @@ initialize_feature = (engine, name, func) ->
       idx -= 1
 
     if Math.abs(right_now - right_nowish) > pusher.tick_interval
-      console.log "Not in cache: #{name}", {right_now, right_nowish, tick_interval: pusher.tick_interval, ticked_at: e.ticked_at, idx}  if config.log_level > 1
+      console.log "Not in cache: #{name}", {right_now, right_nowish, tick_interval: pusher.tick_interval, ticked_at: e.ticked_at, idx}  if config.log_level > 2
       return null
 
     cache = e.cache[name]
@@ -346,12 +347,13 @@ initialize_feature = (engine, name, func) ->
     MACD_weight = args?.MACD_weight or ''
     MACD_feature = args?.MACD_feature or 'price'
     eval_entry_every_n_seconds = args?.eval_entry_every_n_seconds or ''
+    confirm_weight = args?.confirm_weight or ''
 
-    key = "#{right_now - t * resolution}-#{right_now - t2 * resolution}-#{weight}-#{vel_weight}-#{short_resolution}-#{MACD_weight}-#{eval_entry_every_n_seconds}-#{MACD_feature}"
+    key = "#{right_now - t * resolution}-#{right_now - t2 * resolution}-#{weight}-#{vel_weight}-#{short_resolution}-#{MACD_weight}-#{eval_entry_every_n_seconds}-#{MACD_feature}-#{confirm_weight}"
 
     val = cache[key]
     if !val?
-      console.log "Not in cache: #{name} #{key}" if config.log_level > 1
+      console.log "Not in cache: #{name} #{key}" if config.log_level > 2
       return null
 
     if !(key of next_cache)

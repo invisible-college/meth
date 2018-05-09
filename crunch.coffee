@@ -84,11 +84,6 @@ compute_KPI = (dealer_or_dealers, name) ->
   completed = 0 
   gains = 0 
 
-
-  slippage = 0 
-  slip_tracked = 0 
-  all_slippage = []
-  slippage2 = []
   for p in positions
     more_than_day  += 1 if (!p.closed && ts - p.created > 24 * 60 * 60) || ( p.closed && p.closed - p.created > 24 * 60 * 60)
     more_than_hour += 1 if (!p.closed && ts - p.created > 60 * 60) || ( p.closed && p.closed - p.created > 60 * 60)
@@ -100,33 +95,6 @@ compute_KPI = (dealer_or_dealers, name) ->
 
     gains += 1 if p.closed && p.profit > 0
 
-    for trade in [p.entry, p.exit] when trade?.original_rate?
-      original_rate = trade.original_rate
-      slipped = Math.abs(original_rate - trade.rate) / original_rate
-
-      if trade.flags?.order_method == 1        
-        slippage += slipped
-
-        slipped_amt = 0
-        for fill in (trade.fills or [])
-          slipped_amt += fill.slippage
-
-        all_slippage.push 
-          resets: trade.orders?.length or trade.resets
-          slipped: slipped
-          order_depth: trade.info 
-          type: trade.type
-          amt: trade.amount
-          slipped_amt: slipped_amt
-        slip_tracked += 1
-
-      else if trade.flags?.order_method == 0     
-        slippage2.push
-          resets: trade.orders?.length or trade.resets
-          slipped: slipped
-          order_depth: trade.info 
-          type: trade.type
-          amt: trade.amount
 
 
 
@@ -134,18 +102,21 @@ compute_KPI = (dealer_or_dealers, name) ->
     dealers: dealer_or_dealers
     more_than_day: more_than_day / (positions.length or 1)
     more_than_hour: more_than_hour / (positions.length or 1)
-    slippage: 
-      avg: if slip_tracked > 0 then slippage / slip_tracked else 0 
-      all: all_slippage
-      all2: slippage2
     status:
       open: open
       completed: completed
       gains: gains
 
-  fills = (pos.entry.fills for pos in positions when pos.entry?.fills?.length > 0)
-  fills = fills.concat (pos.exit.fills for pos in positions when pos.exit?.fills?.length > 0)
-  fills = [].concat fills... # flatten
+  fills = []
+  for pos in positions 
+    for fill in (pos.entry?.fills or [])
+      fills.push fill 
+    for fill in (pos.exit?.fills or [])
+      fills.push fill 
+
+  # fills = (pos.entry.fills for pos in positions when pos.entry?.fills?.length > 0)
+  # fills = fills.concat (pos.exit.fills for pos in positions when pos.exit?.fills?.length > 0)
+  # fills = [].concat fills... # flatten
   
   fills.sort (a,b) -> b.date - a.date 
 
@@ -155,9 +126,6 @@ compute_KPI = (dealer_or_dealers, name) ->
   positions_by_created.sort (a,b) -> b.created - a.created
   active_positions = []
   
-  taker_fee = balances.taker_fee
-  maker_fee = balances.maker_fee
-
   baseline = deposits[name]
   cur_balance = 
     c2: deposits[name].c2
@@ -209,6 +177,7 @@ compute_KPI = (dealer_or_dealers, name) ->
       last_period -= 1
 
 
+
     # trade-level metrics
     c2_fees = c1_fees = volume = 0 
 
@@ -217,29 +186,34 @@ compute_KPI = (dealer_or_dealers, name) ->
       break if fills.length == 0 || fills[fills.length - 1].date > period / 1000 + period_length
 
       fill = fills.pop()
-      xfee = if fill.maker then maker_fee else taker_fee
       volume += fill.amount 
 
       # console.log 'TRADE AMOUNT', trade.amount, trade.type
+      fee = fill.fee
       if fill.type == 'buy'
         cur_balance.c1 -= fill.total
         cur_balance.c2 += fill.amount
 
         if config.exchange == 'poloniex'
-          fee = if fill.fee? then fill.fee else fill.amount * xfee
+          
           c2_fees += fee
           cur_balance.c2 -= fee
         else 
-          fee = if fill.fee? then fill.fee else fill.total * xfee
           c1_fees += fee
           cur_balance.c1 -= fee
 
       else 
         cur_balance.c1 += fill.total
         cur_balance.c2 -= fill.amount
-        fee = if fill.fee? then fill.fee else fill.total * xfee 
         c1_fees += fee
         cur_balance.c1 -= fee
+
+    if !stats.$c1_start?
+      stats.$c1_start = $c1 
+      stats.$c2_start = $c2 
+
+    stats.$c1_end = $c1 
+    stats.$c2_end = $c2
 
 
     if (cur_balance.c2 < 0 || cur_balance.c1 < 0) && config.simulation 
